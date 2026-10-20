@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "minimumReleaseAge": "3 days",
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "op upgrades can rename subcommands the allowlist depends on; review them by hand",
+      "matchDepNames": ["docker.io/1password/op", "1password/op"],
+      "automerge": false
+    }
+  ]
+}
