@@ -53,6 +53,32 @@ The Pushover message never includes the command, because Pushover's servers woul
 - Each request has a random ID and one challenge at a time. A challenge can be answered once, right or wrong.
 - A request is decided once. After it's approved, denied, or expired, its page only shows that outcome. The page never shows `op`'s output.
 
+## Cached approvals
+
+Agents often run the same command several times in a few minutes. **Approve and cache for 1 hour** approves the request with the same passkey check as **Approve**, and also lets that exact command run again without asking you.
+
+A cached approval:
+
+- matches only the exact argument list. `op read "op://Agents/X/credential"` doesn't cover `op read "op://Agents/X/credential" --no-newline`.
+- lapses after 5 minutes without use, and never lasts more than an hour after your tap, however often it's used.
+- stores the approval, not the output. `op` runs again for each request, so a rotated secret comes back new.
+- sends no notification and opens no page when it's used.
+- lives in memory. Restarting op-gate clears every cached approval, and there's no other way to revoke one early.
+
+Plain **Approve** caches nothing, and denials are never cached.
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> approved: Approve
+    pending --> approvedAndCached: Approve and cache
+    pending --> denied: Deny
+    pending --> expired: timeout or client gone
+    pending --> failed: notification failed
+    approvedAndCached --> cache: stores the exact arguments
+    cache --> cache: same command, used within 5 min and 1 h of the tap
+```
+
 ## Registering a passkey
 
 op-gate reads passkeys from a directory, one file per passkey, and never writes to it:
@@ -134,8 +160,8 @@ export OP_FORWARD_TOKEN_DIR="$dir"
 ## Operations
 
 - **Run one replica.** Pending requests live in memory, so a second instance would hold requests the first doesn't know about. A restart fails any request that's waiting.
-- **Logs** are JSON on stdout: one line per request with its ID, subcommand, outcome, exit code, and duration. They never include arguments or output, since arguments carry item names. Every line has `"service":"op-gate"`, and lines logged inside a span carry its `trace_id` and `span_id`, so a log pipeline can link them to traces.
-- **Traces:** spans for each request, the Pushover call, the passkey check, and each `op` run, with the request ID and outcome as attributes.
+- **Logs** are JSON on stdout: one line per request with its ID, subcommand, outcome, exit code, and duration. A request answered from a cached approval has outcome `cache_hit`, and a `cached approval used` line before it names the request that created the approval in `approved_by`. They never include arguments or output, since arguments carry item names. Every line has `"service":"op-gate"`, and lines logged inside a span carry its `trace_id` and `span_id`, so a log pipeline can link them to traces.
+- **Traces:** spans for each request, the Pushover call, the passkey check, and each `op` run, with the request ID and outcome as attributes. A cache hit's request span also carries `op_gate.approved_by`.
 - **`op` upgrades:** the base image is pinned by digest. Renovate opens upgrade PRs, which aren't automerged, because a renamed subcommand would change what the allowlist allows.
 
 ## Security model
@@ -143,6 +169,8 @@ export OP_FORWARD_TOKEN_DIR="$dir"
 op-gate protects against an agent reading secrets through ordinary `op` calls that you didn't approve. Approving needs a passkey and user verification on your device, so nothing on the calling machine can fake it.
 
 It does not protect against an agent with other ways to reach the secrets. One example is cluster credentials that can read op-gate's service account token or change its passkeys directory. The approval is only as strong as the weakest credential the calling machine already holds.
+
+A cached approval works for any caller that can reach port 18340, because op-gate doesn't know who's calling. If one agent's command is cached, another agent on the same network can run that exact command without asking you until the approval lapses. Restart op-gate to clear every cached approval.
 
 ## Development
 
