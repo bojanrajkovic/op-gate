@@ -83,9 +83,9 @@ func fail(format string, a ...any) result {
 }
 
 type server struct {
-	// ask blocks until the owner approves (true) or denies (false) request id,
-	// or until ctx ends.
-	ask             func(ctx context.Context, id string, args []string) (bool, error)
+	// ask blocks until the owner approves or denies request id, or until ctx
+	// ends.
+	ask             func(ctx context.Context, id string, args []string) (verdict, error)
 	run             func(ctx context.Context, args []string) result
 	approvalTimeout time.Duration
 	opTimeout       time.Duration
@@ -101,7 +101,7 @@ func (s *server) handle(ctx context.Context, id string, args []string) (result, 
 
 	actx, cancel := context.WithTimeout(ctx, s.approvalTimeout)
 	defer cancel()
-	approved, err := s.ask(actx, id, args)
+	v, err := s.ask(actx, id, args)
 	switch {
 	case ctx.Err() != nil:
 		return fail("client disconnected"), "disconnected"
@@ -109,8 +109,8 @@ func (s *server) handle(ctx context.Context, id string, args []string) (result, 
 		return fail("no approval within %s", s.approvalTimeout), "timeout"
 	case err != nil:
 		return fail("%v", err), "error"
-	case !approved:
-		return fail("denied"), "denied"
+	case v == verdictDenied:
+		return fail("denied"), v.String()
 	}
 
 	rctx, cancel := context.WithTimeout(ctx, s.opTimeout)
@@ -120,7 +120,7 @@ func (s *server) handle(ctx context.Context, id string, args []string) (result, 
 		res.ExitCode = 1
 		res.Stderr = "op-gate: op exited 127\n" + res.Stderr
 	}
-	return res, "approved"
+	return res, v.String()
 }
 
 func (s *server) execute(w http.ResponseWriter, r *http.Request) {

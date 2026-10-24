@@ -6,10 +6,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // state is where an approval request stands. pending is the only state that
@@ -19,13 +23,14 @@ type state int
 const (
 	pending state = iota
 	approved
+	approvedAndCached // approved, and the same command runs again without asking for a while
 	denied
 	expired // the client gave up or the approval window closed
 	failed  // the notification couldn't be sent
 )
 
 func (s state) String() string {
-	return [...]string{"pending", "approved", "denied", "expired", "failed"}[s]
+	return [...]string{"pending", "approved", "approved and cached", "denied", "expired", "failed"}[s]
 }
 
 // settle returns the state a request in state from moves to when something
@@ -37,6 +42,47 @@ func settle(from, to state) (state, bool) {
 		return from, false
 	}
 	return to, true
+}
+
+// verdict is what ask decided. verdictDenied is the zero value, so an error
+// path that returns verdict(0) can never be read as an approval.
+type verdict int
+
+const (
+	verdictDenied verdict = iota
+	verdictApproved
+	verdictCacheHit // a cached approval allowed it; nobody was asked
+)
+
+// String is the request's outcome in logs and spans.
+func (v verdict) String() string {
+	return [...]string{"denied", "approved", "cache_hit"}[v]
+}
+
+// verdictOf maps a request's final state to ask's answer.
+func verdictOf(st state) verdict {
+	if st == approved || st == approvedAndCached {
+		return verdictApproved
+	}
+	return verdictDenied
+}
+
+// A cached approval lapses once it goes cacheIdle without use, and never
+// outlives cacheMax, however often it's used.
+const (
+	cacheIdle = 5 * time.Minute
+	cacheMax  = time.Hour
+)
+
+type cachedApproval struct {
+	by                   string // ID of the request whose tap created it
+	approvedAt, lastUsed time.Time
+}
+
+// cacheKey joins args with NUL, which an argument can't contain, so two
+// different argument lists never share a key.
+func cacheKey(args []string) string {
+	return strings.Join(args, "\x00")
 }
 
 var errUnknownRequest = errors.New("unknown or expired request")
@@ -57,10 +103,14 @@ type approvals struct {
 
 	mu   sync.Mutex
 	reqs map[string]*approval
+	// shortcut: entries are only removed when looked up, so commands that never
+	// come back stay in memory; fine for one owner's taps, add a sweep if that changes.
+	cache map[string]cachedApproval // by cacheKey
 }
 
 func newApprovals(baseURL string, notify func(context.Context, string) error) *approvals {
-	return &approvals{baseURL: baseURL, notify: notify, keep: 10 * time.Minute, reqs: map[string]*approval{}}
+	return &approvals{baseURL: baseURL, notify: notify, keep: 10 * time.Minute, reqs: map[string]*approval{},
+		cache: map[string]cachedApproval{}}
 }
 
 func newID() string {
@@ -69,9 +119,16 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-// ask opens request id, sends the owner a link to its page, and waits for a
+// ask answers from a cached approval of args if there is one. Otherwise it
+// opens request id, sends the owner a link to its page, and waits for a
 // decision or for ctx to end.
-func (a *approvals) ask(ctx context.Context, id string, args []string) (bool, error) {
+func (a *approvals) ask(ctx context.Context, id string, args []string) (verdict, error) {
+	if by, ok := a.cached(args); ok {
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String("op_gate.approved_by", by))
+		slog.InfoContext(ctx, "cached approval used", "request_id", id, "approved_by", by)
+		return verdictCacheHit, nil
+	}
+
 	r := &approval{args: args, state: pending, decided: make(chan state, 1)}
 	a.mu.Lock()
 	a.reqs[id] = r
@@ -79,19 +136,19 @@ func (a *approvals) ask(ctx context.Context, id string, args []string) (bool, er
 
 	if err := a.notify(ctx, a.baseURL+"/approve/"+id); err != nil {
 		a.decide(id, failed)
-		return false, fmt.Errorf("sending notification: %w", err)
+		return verdictDenied, fmt.Errorf("sending notification: %w", err)
 	}
 
 	select {
 	case st := <-r.decided:
-		return st == approved, nil
+		return verdictOf(st), nil
 	case <-ctx.Done():
 		// A tap may have landed just before the deadline; the request's final
 		// state decides, not which channel select happened to pick.
 		if st, _ := a.decide(id, expired); st != expired {
-			return st == approved, nil
+			return verdictOf(st), nil
 		}
-		return false, ctx.Err()
+		return verdictDenied, ctx.Err()
 	}
 }
 
@@ -108,6 +165,10 @@ func (a *approvals) decide(id string, to state) (state, error) {
 		r.state = st
 		r.session = nil
 		r.decided <- st
+		if st == approvedAndCached {
+			now := time.Now()
+			a.cache[cacheKey(r.args)] = cachedApproval{by: id, approvedAt: now, lastUsed: now}
+		}
 		time.AfterFunc(a.keep, func() {
 			a.mu.Lock()
 			delete(a.reqs, id)
@@ -115,6 +176,26 @@ func (a *approvals) decide(id string, to state) (state, error) {
 		})
 	}
 	return st, nil
+}
+
+// cached reports whether a fresh cached approval covers args, and which
+// request created it. A hit counts as a use; a stale entry is dropped.
+func (a *approvals) cached(args []string) (by string, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	key := cacheKey(args)
+	c, ok := a.cache[key]
+	if !ok {
+		return "", false
+	}
+	now := time.Now()
+	if now.Sub(c.lastUsed) >= cacheIdle || now.Sub(c.approvedAt) >= cacheMax {
+		delete(a.cache, key)
+		return "", false
+	}
+	c.lastUsed = now
+	a.cache[key] = c
+	return c.by, true
 }
 
 // view returns request id's command and state for its page.

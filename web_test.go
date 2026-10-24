@@ -52,8 +52,8 @@ func pendingRequest(t *testing.T, w *web, id string) <-chan bool {
 	notified := make(chan struct{})
 	w.approvals.notify = func(context.Context, string) error { close(notified); return nil }
 	go func() {
-		ok, _ := w.approvals.ask(context.Background(), id, []string{"read", "op://Agent/GitHub Token/credential"})
-		got <- ok
+		v, _ := w.approvals.ask(context.Background(), id, []string{"read", "op://Agent/GitHub Token/credential"})
+		got <- v == verdictApproved
 	}()
 	<-notified
 	return got
@@ -106,6 +106,25 @@ func TestApprovalPage(t *testing.T) {
 		}
 		if rec := do(t, h, "POST", "/approve/req1/options", ""); rec.Code != http.StatusConflict {
 			t.Fatalf("options after approval: %d", rec.Code)
+		}
+	})
+
+	t.Run("passkey approves and caches", func(t *testing.T) {
+		w := newTestWeb(fakeKeys{})
+		result := pendingRequest(t, w, "req1")
+		h := w.handler()
+		do(t, h, "POST", "/approve/req1/options", "")
+		if rec := do(t, h, "POST", "/approve/req1/verify?remember=1", "good"); rec.Code != 200 || !strings.Contains(rec.Body.String(), "approved and cached") {
+			t.Fatalf("verify: %d %s", rec.Code, rec.Body)
+		}
+		if !<-result {
+			t.Fatal("request not approved")
+		}
+		if page := do(t, h, "GET", "/approve/req1", ""); !strings.Contains(page.Body.String(), "without asking for up to an hour") {
+			t.Fatalf("page doesn't say the approval is cached: %s", page.Body)
+		}
+		if v, _ := w.approvals.ask(context.Background(), "req2", []string{"read", "op://Agent/GitHub Token/credential"}); v != verdictCacheHit {
+			t.Fatalf("same command afterwards = %v, want a cache hit", v)
 		}
 	})
 

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -56,8 +60,8 @@ func TestAsk(t *testing.T) {
 	t.Run("approve", func(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		decideAfterNotify(a, links, approved)
-		if ok, err := a.ask(context.Background(), "req1", args); !ok || err != nil {
-			t.Fatalf("ask = %v, %v", ok, err)
+		if v, err := a.ask(context.Background(), "req1", args); v != verdictApproved || err != nil {
+			t.Fatalf("ask = %v, %v", v, err)
 		}
 		if _, st, _ := a.view("req1"); st != approved {
 			t.Fatalf("page state = %v", st)
@@ -67,8 +71,8 @@ func TestAsk(t *testing.T) {
 	t.Run("deny", func(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		decideAfterNotify(a, links, denied)
-		if ok, err := a.ask(context.Background(), "req1", args); ok || err != nil {
-			t.Fatalf("ask = %v, %v", ok, err)
+		if v, err := a.ask(context.Background(), "req1", args); v != verdictDenied || err != nil {
+			t.Fatalf("ask = %v, %v", v, err)
 		}
 	})
 
@@ -106,7 +110,20 @@ func TestAsk(t *testing.T) {
 			cancel()
 		}()
 		// Either branch of ask's select may fire; both must report the approval.
-		if ok, _ := a.ask(ctx, "req1", args); !ok {
+		if v, _ := a.ask(ctx, "req1", args); v != verdictApproved {
+			t.Fatal("approval lost to a simultaneous cancel")
+		}
+	})
+
+	t.Run("a cached approval that wins the race with the deadline counts", func(t *testing.T) {
+		a, links := newTestApprovals(nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			<-links
+			a.decide("req1", approvedAndCached)
+			cancel()
+		}()
+		if v, _ := a.ask(ctx, "req1", args); v != verdictApproved {
 			t.Fatal("approval lost to a simultaneous cancel")
 		}
 	})
@@ -126,6 +143,137 @@ func TestAsk(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		if _, _, ok := a.view("req1"); ok {
 			t.Fatal("final request kept forever")
+		}
+	})
+}
+
+// approveVia runs ask for id and answers its notification with to.
+func approveVia(t *testing.T, a *approvals, links chan string, id string, args []string, to state) {
+	t.Helper()
+	go func() {
+		<-links
+		a.decide(id, to)
+	}()
+	if v, err := a.ask(context.Background(), id, args); v != verdictApproved || err != nil {
+		t.Fatalf("ask = %v, %v", v, err)
+	}
+}
+
+// notifies reports whether ask for id sent a notification, denying it if so.
+func notifies(a *approvals, links chan string, id string, args []string) bool {
+	done := make(chan verdict, 1)
+	go func() {
+		v, _ := a.ask(context.Background(), id, args)
+		done <- v
+	}()
+	select {
+	case <-links:
+		a.decide(id, denied)
+		<-done
+		return true
+	case <-done:
+		return false
+	}
+}
+
+func TestCache(t *testing.T) {
+	args := []string{"read", "op://Agent/x/credential"}
+
+	t.Run("a cached approval skips the phone", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			a, links := newTestApprovals(nil)
+			approveVia(t, a, links, "req1", args, approvedAndCached)
+			if v, err := a.ask(context.Background(), "req2", args); v != verdictCacheHit || err != nil {
+				t.Fatalf("ask = %v, %v", v, err)
+			}
+			if len(links) != 0 {
+				t.Fatal("a cache hit sent a notification")
+			}
+			if _, _, ok := a.view("req2"); ok {
+				t.Fatal("a cache hit opened an approval page")
+			}
+		})
+	})
+
+	t.Run("plain approve doesn't cache", func(t *testing.T) {
+		a, links := newTestApprovals(nil)
+		approveVia(t, a, links, "req1", args, approved)
+		if !notifies(a, links, "req2", args) {
+			t.Fatal("a one-time approval was reused")
+		}
+	})
+
+	t.Run("only the exact arguments match", func(t *testing.T) {
+		a, links := newTestApprovals(nil)
+		approveVia(t, a, links, "req1", args, approvedAndCached)
+		if !notifies(a, links, "req2", append(args, "--no-newline")) {
+			t.Fatal("different arguments used the cached approval")
+		}
+		// NUL joins the key, so regrouping the same words is a different command.
+		if !notifies(a, links, "req3", []string{"read", "op://Agent/x/credential --no-newline"}) {
+			t.Fatal("regrouped arguments used the cached approval")
+		}
+	})
+
+	t.Run("lapses after going unused", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			a, links := newTestApprovals(nil)
+			approveVia(t, a, links, "req1", args, approvedAndCached)
+			time.Sleep(cacheIdle)
+			if !notifies(a, links, "req2", args) {
+				t.Fatal("cached approval outlived its idle timeout")
+			}
+		})
+	})
+
+	t.Run("use keeps it alive, up to the cap", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			a, links := newTestApprovals(nil)
+			approveVia(t, a, links, "req1", args, approvedAndCached)
+			start := time.Now()
+			for time.Since(start)+4*time.Minute < cacheMax {
+				time.Sleep(4 * time.Minute)
+				if v, _ := a.ask(context.Background(), "hit", args); v != verdictCacheHit {
+					t.Fatalf("miss after %v of steady use", time.Since(start))
+				}
+			}
+			time.Sleep(cacheMax - time.Since(start))
+			if !notifies(a, links, "req2", args) {
+				t.Fatal("cached approval outlived its cap")
+			}
+		})
+	})
+
+	t.Run("a tap on an expired request caches nothing", func(t *testing.T) {
+		a, links := newTestApprovals(nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		a.ask(ctx, "req1", args)
+		<-links
+		if st, _ := a.decide("req1", approvedAndCached); st != expired {
+			t.Fatalf("state = %v", st)
+		}
+		if !notifies(a, links, "req2", args) {
+			t.Fatal("a late tap cached an approval")
+		}
+	})
+
+	t.Run("a hit logs which request approved it", func(t *testing.T) {
+		var buf bytes.Buffer
+		old := slog.Default()
+		slog.SetDefault(newLogger(&buf))
+		t.Cleanup(func() { slog.SetDefault(old) })
+
+		a, links := newTestApprovals(nil)
+		approveVia(t, a, links, "req1", args, approvedAndCached)
+		a.ask(context.Background(), "req2", args)
+
+		var line map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
+			t.Fatalf("log %q: %v", buf.String(), err)
+		}
+		if line["msg"] != "cached approval used" || line["request_id"] != "req2" || line["approved_by"] != "req1" {
+			t.Fatalf("log line = %v", line)
 		}
 	})
 }
