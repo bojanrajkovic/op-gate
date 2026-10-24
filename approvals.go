@@ -39,6 +39,28 @@ func settle(from, to state) (state, bool) {
 	return to, true
 }
 
+// verdict is what ask decided. verdictDenied is the zero value, so an error
+// path that returns verdict(0) can never be read as an approval.
+type verdict int
+
+const (
+	verdictDenied verdict = iota
+	verdictApproved
+)
+
+// String is the request's outcome in logs and spans.
+func (v verdict) String() string {
+	return [...]string{"denied", "approved"}[v]
+}
+
+// verdictOf maps a request's final state to ask's answer.
+func verdictOf(st state) verdict {
+	if st == approved {
+		return verdictApproved
+	}
+	return verdictDenied
+}
+
 var errUnknownRequest = errors.New("unknown or expired request")
 
 type approval struct {
@@ -71,7 +93,7 @@ func newID() string {
 
 // ask opens request id, sends the owner a link to its page, and waits for a
 // decision or for ctx to end.
-func (a *approvals) ask(ctx context.Context, id string, args []string) (bool, error) {
+func (a *approvals) ask(ctx context.Context, id string, args []string) (verdict, error) {
 	r := &approval{args: args, state: pending, decided: make(chan state, 1)}
 	a.mu.Lock()
 	a.reqs[id] = r
@@ -79,19 +101,19 @@ func (a *approvals) ask(ctx context.Context, id string, args []string) (bool, er
 
 	if err := a.notify(ctx, a.baseURL+"/approve/"+id); err != nil {
 		a.decide(id, failed)
-		return false, fmt.Errorf("sending notification: %w", err)
+		return verdictDenied, fmt.Errorf("sending notification: %w", err)
 	}
 
 	select {
 	case st := <-r.decided:
-		return st == approved, nil
+		return verdictOf(st), nil
 	case <-ctx.Done():
 		// A tap may have landed just before the deadline; the request's final
 		// state decides, not which channel select happened to pick.
 		if st, _ := a.decide(id, expired); st != expired {
-			return st == approved, nil
+			return verdictOf(st), nil
 		}
-		return false, ctx.Err()
+		return verdictDenied, ctx.Err()
 	}
 }
 

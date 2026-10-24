@@ -56,8 +56,8 @@ func TestAsk(t *testing.T) {
 	t.Run("approve", func(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		decideAfterNotify(a, links, approved)
-		if ok, err := a.ask(context.Background(), "req1", args); !ok || err != nil {
-			t.Fatalf("ask = %v, %v", ok, err)
+		if v, err := a.ask(context.Background(), "req1", args); v != verdictApproved || err != nil {
+			t.Fatalf("ask = %v, %v", v, err)
 		}
 		if _, st, _ := a.view("req1"); st != approved {
 			t.Fatalf("page state = %v", st)
@@ -67,8 +67,8 @@ func TestAsk(t *testing.T) {
 	t.Run("deny", func(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		decideAfterNotify(a, links, denied)
-		if ok, err := a.ask(context.Background(), "req1", args); ok || err != nil {
-			t.Fatalf("ask = %v, %v", ok, err)
+		if v, err := a.ask(context.Background(), "req1", args); v != verdictDenied || err != nil {
+			t.Fatalf("ask = %v, %v", v, err)
 		}
 	})
 
@@ -106,7 +106,7 @@ func TestAsk(t *testing.T) {
 			cancel()
 		}()
 		// Either branch of ask's select may fire; both must report the approval.
-		if ok, _ := a.ask(ctx, "req1", args); !ok {
+		if v, _ := a.ask(ctx, "req1", args); v != verdictApproved {
 			t.Fatal("approval lost to a simultaneous cancel")
 		}
 	})

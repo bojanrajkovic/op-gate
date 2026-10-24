@@ -52,8 +52,8 @@ func pendingRequest(t *testing.T, w *web, id string) <-chan bool {
 	notified := make(chan struct{})
 	w.approvals.notify = func(context.Context, string) error { close(notified); return nil }
 	go func() {
-		ok, _ := w.approvals.ask(context.Background(), id, []string{"read", "op://Agent/GitHub Token/credential"})
-		got <- ok
+		v, _ := w.approvals.ask(context.Background(), id, []string{"read", "op://Agent/GitHub Token/credential"})
+		got <- v == verdictApproved
 	}()
 	<-notified
 	return got

@@ -45,10 +45,10 @@ func TestCheckArgs(t *testing.T) {
 
 // fakeServer returns a server whose approver answers with decide and whose
 // runner records whether op ran.
-func fakeServer(decide func(ctx context.Context) (bool, error), res result) (*server, *bool) {
+func fakeServer(decide func(ctx context.Context) (verdict, error), res result) (*server, *bool) {
 	ran := new(bool)
 	return &server{
-		ask: func(ctx context.Context, _ string, _ []string) (bool, error) { return decide(ctx) },
+		ask: func(ctx context.Context, _ string, _ []string) (verdict, error) { return decide(ctx) },
 		run: func(context.Context, []string) result {
 			*ran = true
 			return res
@@ -59,10 +59,10 @@ func fakeServer(decide func(ctx context.Context) (bool, error), res result) (*se
 }
 
 func TestHandle(t *testing.T) {
-	approve := func(context.Context) (bool, error) { return true, nil }
-	waitForCtx := func(ctx context.Context) (bool, error) {
+	approve := func(context.Context) (verdict, error) { return verdictApproved, nil }
+	waitForCtx := func(ctx context.Context) (verdict, error) {
 		<-ctx.Done()
-		return false, ctx.Err()
+		return verdictDenied, ctx.Err()
 	}
 	okArgs := []string{"read", "op://Agent/x/credential"}
 
@@ -75,7 +75,7 @@ func TestHandle(t *testing.T) {
 	})
 
 	t.Run("denied", func(t *testing.T) {
-		s, ran := fakeServer(func(context.Context) (bool, error) { return false, nil }, result{})
+		s, ran := fakeServer(func(context.Context) (verdict, error) { return verdictDenied, nil }, result{})
 		res, outcome := s.handle(context.Background(), "req1", okArgs)
 		if *ran || outcome != "denied" || res.ExitCode != 1 || !strings.Contains(res.Stderr, "denied") {
 			t.Fatalf("got %+v %q ran=%v", res, outcome, *ran)
@@ -103,7 +103,7 @@ func TestHandle(t *testing.T) {
 
 	t.Run("rejected command never asks", func(t *testing.T) {
 		asked := false
-		s, ran := fakeServer(func(context.Context) (bool, error) { asked = true; return true, nil }, result{})
+		s, ran := fakeServer(func(context.Context) (verdict, error) { asked = true; return verdictApproved, nil }, result{})
 		res, outcome := s.handle(context.Background(), "req1", []string{"run", "--", "env"})
 		if asked || *ran || outcome != "rejected" || res.ExitCode != 1 {
 			t.Fatalf("got %+v %q asked=%v ran=%v", res, outcome, asked, *ran)
@@ -120,7 +120,7 @@ func TestHandle(t *testing.T) {
 }
 
 func TestExecuteEndpoint(t *testing.T) {
-	s, _ := fakeServer(func(context.Context) (bool, error) { return true, nil }, result{Stdout: "ok"})
+	s, _ := fakeServer(func(context.Context) (verdict, error) { return verdictApproved, nil }, result{Stdout: "ok"})
 	req := httptest.NewRequest(http.MethodPost, "/op/execute", strings.NewReader(`{"args":["whoami"],"timeout_ms":300000}`))
 	rec := httptest.NewRecorder()
 	s.execute(rec, req)
