@@ -57,7 +57,8 @@ func (w *web) approvePage(rw http.ResponseWriter, r *http.Request) {
 		Command string
 		State   string
 		Pending bool
-	}{"op " + quoteArgs(args), st.String(), st == pending})
+		Cached  bool
+	}{"op " + quoteArgs(args), st.String(), st == pending, st == approvedAndCached})
 }
 
 func (w *web) approveOptions(rw http.ResponseWriter, r *http.Request) {
@@ -96,7 +97,11 @@ func (w *web) approveVerify(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, http.StatusForbidden, map[string]string{"error": "The passkey check failed."})
 		return
 	}
-	st, err := w.approvals.decide(id, approved)
+	to := approved
+	if r.URL.Query().Get("remember") == "1" {
+		to = approvedAndCached
+	}
+	st, err := w.approvals.decide(id, to)
 	if err != nil {
 		writeJSON(rw, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -176,7 +181,8 @@ var pages = template.Must(template.New("").Parse(`
  @media(prefers-color-scheme:dark){body{color:#eee;background:#111}code,textarea{background:#222!important;color:#eee}}
  code{display:block;padding:.8rem;background:#eee;border-radius:.5rem;word-break:break-all}
  button{font:inherit;width:100%;padding:.9rem;margin:.4rem 0;border:0;border-radius:.6rem;color:#fff;background:#0a7}
- button.deny{background:#c33} textarea{width:100%;height:9rem;font:13px ui-monospace,monospace}
+ button.deny{background:#c33} button.cache{color:#0a7;background:none;box-shadow:inset 0 0 0 2px #0a7}
+ .hint{font-size:14px;opacity:.7;margin:0 0 .8rem} textarea{width:100%;height:9rem;font:13px ui-monospace,monospace}
  #msg{min-height:1.5rem;margin-top:1rem}
 </style>
 <script>
@@ -197,18 +203,20 @@ const say = t => { document.getElementById('msg').textContent = t; };
 <p>Claude wants to run:</p><code>{{.Command}}</code>
 {{if .Pending}}
 <button onclick="approve()">Approve with Face ID</button>
+<button class="cache" onclick="approve(true)">Approve and cache for 1 hour</button>
+<p class="hint">op-gate runs this exact command again without asking, until it goes unused for 5 minutes or an hour passes.</p>
 <button class="deny" onclick="deny()">Deny</button>
 <p id="msg"></p>
 <script>
 const base = location.pathname;
-async function approve() {
+async function approve(remember) {
   try {
     const opts = (await post(base + '/options')).publicKey;
     opts.challenge = unb64u(opts.challenge);
     (opts.allowCredentials || []).forEach(c => c.id = unb64u(c.id));
     const cred = await navigator.credentials.get({publicKey: opts});
     const res = cred.response;
-    const out = await post(base + '/verify', {
+    const out = await post(base + '/verify' + (remember ? '?remember=1' : ''), {
       id: cred.id, rawId: b64u(cred.rawId), type: cred.type,
       response: {
         clientDataJSON: b64u(res.clientDataJSON), authenticatorData: b64u(res.authenticatorData),
@@ -223,7 +231,7 @@ async function deny() {
   catch (e) { say(e.message); }
 }
 </script>
-{{else}}<p>This request is <strong>{{.State}}</strong>.</p>{{end}}
+{{else}}<p>This request is <strong>{{.State}}</strong>.{{if .Cached}} op-gate will run this exact command again without asking for up to an hour.{{end}}</p>{{end}}
 {{end}}
 
 {{define "register"}}{{template "head"}}<h1>Register a passkey</h1>

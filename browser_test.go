@@ -118,4 +118,23 @@ func TestPageScripts(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("approval never reached the request")
 	}
+
+	result = pendingRequest(t, w, "req2")
+	err = chromedp.Do(ctx,
+		chromedp.Navigate(origin+"/approve/req2"),
+		chromedp.Click(chromedp.CSS("button.cache")),
+	)
+	if err != nil {
+		t.Fatalf("approving and caching in the browser: %v", err)
+	}
+	if _, err := chromedp.Run(ctx, chromedp.Poll[bool](`document.body.textContent.includes('approved and cached')`)); err != nil {
+		msg, _ := chromedp.Run(ctx, chromedp.Text(chromedp.CSS("body")))
+		t.Fatalf("page never showed the cached approval: %v; page says %q", err, strings.TrimSpace(msg))
+	}
+	if ok := <-result; !ok {
+		t.Fatal("cached request not approved")
+	}
+	if v, _ := w.approvals.ask(ctx, "req3", []string{"read", "op://Agent/GitHub Token/credential"}); v != verdictCacheHit {
+		t.Fatalf("same command afterwards = %v, want a cache hit", v)
+	}
 }

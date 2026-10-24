@@ -109,6 +109,25 @@ func TestApprovalPage(t *testing.T) {
 		}
 	})
 
+	t.Run("passkey approves and caches", func(t *testing.T) {
+		w := newTestWeb(fakeKeys{})
+		result := pendingRequest(t, w, "req1")
+		h := w.handler()
+		do(t, h, "POST", "/approve/req1/options", "")
+		if rec := do(t, h, "POST", "/approve/req1/verify?remember=1", "good"); rec.Code != 200 || !strings.Contains(rec.Body.String(), "approved and cached") {
+			t.Fatalf("verify: %d %s", rec.Code, rec.Body)
+		}
+		if !<-result {
+			t.Fatal("request not approved")
+		}
+		if page := do(t, h, "GET", "/approve/req1", ""); !strings.Contains(page.Body.String(), "without asking for up to an hour") {
+			t.Fatalf("page doesn't say the approval is cached: %s", page.Body)
+		}
+		if v, _ := w.approvals.ask(context.Background(), "req2", []string{"read", "op://Agent/GitHub Token/credential"}); v != verdictCacheHit {
+			t.Fatalf("same command afterwards = %v, want a cache hit", v)
+		}
+	})
+
 	t.Run("failed passkey check leaves the request pending, and the challenge is single use", func(t *testing.T) {
 		w := newTestWeb(fakeKeys{})
 		pendingRequest(t, w, "req1")

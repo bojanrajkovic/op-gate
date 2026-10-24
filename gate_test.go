@@ -74,6 +74,14 @@ func TestHandle(t *testing.T) {
 		}
 	})
 
+	t.Run("cache hit runs op", func(t *testing.T) {
+		s, ran := fakeServer(func(context.Context) (verdict, error) { return verdictCacheHit, nil }, result{Stdout: "secret"})
+		res, outcome := s.handle(context.Background(), "req1", okArgs)
+		if !*ran || outcome != "cache_hit" || res.Stdout != "secret" {
+			t.Fatalf("got %+v %q ran=%v", res, outcome, *ran)
+		}
+	})
+
 	t.Run("denied", func(t *testing.T) {
 		s, ran := fakeServer(func(context.Context) (verdict, error) { return verdictDenied, nil }, result{})
 		res, outcome := s.handle(context.Background(), "req1", okArgs)
