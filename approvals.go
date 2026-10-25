@@ -79,15 +79,16 @@ type cachedApproval struct {
 	approvedAt, lastUsed time.Time
 }
 
-// cacheKey joins args with NUL, which an argument can't contain, so two
-// different argument lists never share a key.
-func cacheKey(args []string) string {
-	return strings.Join(args, "\x00")
+// cacheKey joins the client's ID and args with NUL, which neither a hex ID
+// nor an argument can contain, so two different requests never share a key.
+func cacheKey(c client, args []string) string {
+	return c.id + "\x00" + strings.Join(args, "\x00")
 }
 
 var errUnknownRequest = errors.New("unknown or expired request")
 
 type approval struct {
+	client  client
 	args    []string
 	state   state
 	session *webauthn.SessionData // the current passkey challenge; single use
@@ -122,14 +123,14 @@ func newID() string {
 // ask answers from a cached approval of args if there is one. Otherwise it
 // opens request id, sends the owner a link to its page, and waits for a
 // decision or for ctx to end.
-func (a *approvals) ask(ctx context.Context, id string, args []string) (verdict, error) {
-	if by, ok := a.cached(args); ok {
+func (a *approvals) ask(ctx context.Context, id string, c client, args []string) (verdict, error) {
+	if by, ok := a.cached(c, args); ok {
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("op_gate.approved_by", by))
 		slog.InfoContext(ctx, "cached approval used", "request_id", id, "approved_by", by)
 		return verdictCacheHit, nil
 	}
 
-	r := &approval{args: args, state: pending, decided: make(chan state, 1)}
+	r := &approval{client: c, args: args, state: pending, decided: make(chan state, 1)}
 	a.mu.Lock()
 	a.reqs[id] = r
 	a.mu.Unlock()
@@ -167,7 +168,7 @@ func (a *approvals) decide(id string, to state) (state, error) {
 		r.decided <- st
 		if st == approvedAndCached {
 			now := time.Now()
-			a.cache[cacheKey(r.args)] = cachedApproval{by: id, approvedAt: now, lastUsed: now}
+			a.cache[cacheKey(r.client, r.args)] = cachedApproval{by: id, approvedAt: now, lastUsed: now}
 		}
 		time.AfterFunc(a.keep, func() {
 			a.mu.Lock()
@@ -178,35 +179,35 @@ func (a *approvals) decide(id string, to state) (state, error) {
 	return st, nil
 }
 
-// cached reports whether a fresh cached approval covers args, and which
-// request created it. A hit counts as a use; a stale entry is dropped.
-func (a *approvals) cached(args []string) (by string, ok bool) {
+// cached reports whether a fresh cached approval covers args from client c,
+// and which request created it. A hit counts as a use; a stale entry is dropped.
+func (a *approvals) cached(c client, args []string) (by string, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	key := cacheKey(args)
-	c, ok := a.cache[key]
+	key := cacheKey(c, args)
+	e, ok := a.cache[key]
 	if !ok {
 		return "", false
 	}
 	now := time.Now()
-	if now.Sub(c.lastUsed) >= cacheIdle || now.Sub(c.approvedAt) >= cacheMax {
+	if now.Sub(e.lastUsed) >= cacheIdle || now.Sub(e.approvedAt) >= cacheMax {
 		delete(a.cache, key)
 		return "", false
 	}
-	c.lastUsed = now
-	a.cache[key] = c
-	return c.by, true
+	e.lastUsed = now
+	a.cache[key] = e
+	return e.by, true
 }
 
-// view returns request id's command and state for its page.
-func (a *approvals) view(id string) ([]string, state, bool) {
+// view returns request id's client, command, and state for its page.
+func (a *approvals) view(id string) (client, []string, state, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	r, ok := a.reqs[id]
 	if !ok {
-		return nil, 0, false
+		return client{}, nil, 0, false
 	}
-	return r.args, r.state, true
+	return r.client, r.args, r.state, true
 }
 
 // setSession stores a fresh passkey challenge for a pending request.

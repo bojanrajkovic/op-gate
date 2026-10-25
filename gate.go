@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -67,6 +70,41 @@ func subcommand(args []string) string {
 	return args[0] + " " + args[1]
 }
 
+// client is who sent a request: the name its token claims, and a hash of the
+// token that tells clients apart. The name isn't verified; the hash is the identity.
+type client struct {
+	name string // usually the client's hostname
+	id   string // hex SHA-256 of the whole token
+}
+
+// short is the client's ID as shown on the approval page, in logs, and in spans.
+func (c client) short() string { return c.id[:8] }
+
+func (c client) String() string { return c.name + " (" + c.short() + ")" }
+
+var clientName = regexp.MustCompile(`^[a-z0-9.-]{1,32}$`)
+
+var errNoClient = errors.New(`this client has no token. If access.token is missing or holds "placeholder", create one:
+  dir="${OP_FORWARD_TOKEN_DIR:-$HOME/.cache/op-forward}"
+  name=$(hostname -s | tr 'A-Z' 'a-z' | tr -c 'a-z0-9.\n-' '-' | cut -c1-32)
+  printf '%s:%s\n2099-01-01T00:00:00Z\n' "$name" "$(openssl rand -hex 32)" > "$dir/access.token"
+  cp "$dir/access.token" "$dir/refresh.token"
+  chmod 600 "$dir/access.token" "$dir/refresh.token"
+Otherwise don't replace it; ask the owner`)
+
+// parseClient reads the client from the op-forward shim's Authorization
+// header, "Bearer <name>:<secret>", where the token is the first line of the
+// client's access.token.
+func parseClient(header string) (client, error) {
+	token, ok := strings.CutPrefix(header, "Bearer ")
+	name, secret, _ := strings.Cut(token, ":")
+	if !ok || !clientName.MatchString(name) || len(secret) < 32 {
+		return client{}, errNoClient
+	}
+	sum := sha256.Sum256([]byte(token))
+	return client{name: name, id: hex.EncodeToString(sum[:])}, nil
+}
+
 // opRequest and result mirror op-forward's internal/executor Request and Result.
 type opRequest struct {
 	Args []string `json:"args"`
@@ -85,7 +123,7 @@ func fail(format string, a ...any) result {
 type server struct {
 	// ask blocks until the owner approves or denies request id, or until ctx
 	// ends.
-	ask             func(ctx context.Context, id string, args []string) (verdict, error)
+	ask             func(ctx context.Context, id string, c client, args []string) (verdict, error)
 	run             func(ctx context.Context, args []string) result
 	approvalTimeout time.Duration
 	opTimeout       time.Duration
@@ -94,14 +132,14 @@ type server struct {
 // handle returns the result to send back and a one-word outcome for the
 // audit log. It never returns exit code 127: the op-forward shim reads 127 as
 // "proxy unavailable" and silently runs the local op instead.
-func (s *server) handle(ctx context.Context, id string, args []string) (result, string) {
+func (s *server) handle(ctx context.Context, id string, c client, args []string) (result, string) {
 	if err := checkArgs(args); err != nil {
 		return fail("%v", err), "rejected"
 	}
 
 	actx, cancel := context.WithTimeout(ctx, s.approvalTimeout)
 	defer cancel()
-	v, err := s.ask(actx, id, args)
+	v, err := s.ask(actx, id, c, args)
 	switch {
 	case ctx.Err() != nil:
 		return fail("client disconnected"), "disconnected"
@@ -134,7 +172,17 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request) {
 	ctx, span := tracer.Start(r.Context(), "op_gate.request")
 	defer span.End()
 
-	res, outcome := s.handle(ctx, id, req.Args)
+	logAttrs := []any{"request_id", id, "subcommand", subcommand(req.Args)}
+	var res result
+	var outcome string
+	c, err := parseClient(r.Header.Get("Authorization"))
+	if err != nil {
+		res, outcome = fail("%v", err), "no_client"
+	} else {
+		res, outcome = s.handle(ctx, id, c, req.Args)
+		span.SetAttributes(attribute.String("op_gate.client_id", c.short()), attribute.String("op_gate.client_name", c.name))
+		logAttrs = append(logAttrs, "client_id", c.short(), "client_name", c.name)
+	}
 
 	span.SetAttributes(
 		attribute.String("op_gate.request_id", id),
@@ -142,8 +190,8 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request) {
 		attribute.String("op_gate.outcome", outcome),
 		attribute.Int("op_gate.exit_code", res.ExitCode),
 	)
-	slog.InfoContext(ctx, "request", "request_id", id, "subcommand", subcommand(req.Args), "outcome", outcome,
-		"exit_code", res.ExitCode, "duration", time.Since(start).Round(time.Millisecond).String())
+	slog.InfoContext(ctx, "request", append(logAttrs, "outcome", outcome,
+		"exit_code", res.ExitCode, "duration", time.Since(start).Round(time.Millisecond).String())...)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(res); err != nil {
 		slog.WarnContext(ctx, "writing response", "request_id", id, "err", err)

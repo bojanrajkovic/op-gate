@@ -43,12 +43,65 @@ func TestCheckArgs(t *testing.T) {
 	}
 }
 
+func mustClient(token string) client {
+	c, err := parseClient("Bearer " + token)
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
+var (
+	testClient  = mustClient("junction:" + strings.Repeat("s", 32))
+	otherClient = mustClient("devbox:" + strings.Repeat("s", 32))
+)
+
+func TestParseClient(t *testing.T) {
+	secret := strings.Repeat("s", 32)
+	valid := []string{
+		"Bearer junction:" + secret,
+		"Bearer junction:abc:" + secret, // the secret may contain colons
+		"Bearer a.b-c9:" + secret,
+		"Bearer " + strings.Repeat("n", 32) + ":" + secret,
+	}
+	for _, h := range valid {
+		if _, err := parseClient(h); err != nil {
+			t.Errorf("parseClient(%q) = %v, want ok", h, err)
+		}
+	}
+	invalid := []string{
+		"",
+		"Bearer placeholder",
+		"Bearer junction" + secret,
+		"Bearer :" + secret,
+		"Bearer Junction:" + secret,
+		"Bearer jun ction:" + secret,
+		"Bearer " + strings.Repeat("n", 33) + ":" + secret,
+		"Bearer junction:" + secret[1:],
+		"junction:" + secret,
+		"bearer junction:" + secret,
+	}
+	for _, h := range invalid {
+		if _, err := parseClient(h); err == nil {
+			t.Errorf("parseClient(%q) succeeded, want an error", h)
+		}
+	}
+
+	c := mustClient("junction:" + secret)
+	if c.name != "junction" || len(c.id) != 64 || c.short() != c.id[:8] {
+		t.Errorf("client = %+v", c)
+	}
+	if c.id == mustClient("junction:"+strings.Repeat("t", 32)).id {
+		t.Error("two tokens with the same name share an ID")
+	}
+}
+
 // fakeServer returns a server whose approver answers with decide and whose
 // runner records whether op ran.
 func fakeServer(decide func(ctx context.Context) (verdict, error), res result) (*server, *bool) {
 	ran := new(bool)
 	return &server{
-		ask: func(ctx context.Context, _ string, _ []string) (verdict, error) { return decide(ctx) },
+		ask: func(ctx context.Context, _ string, _ client, _ []string) (verdict, error) { return decide(ctx) },
 		run: func(context.Context, []string) result {
 			*ran = true
 			return res
@@ -68,7 +121,7 @@ func TestHandle(t *testing.T) {
 
 	t.Run("approved runs op and passes output through", func(t *testing.T) {
 		s, ran := fakeServer(approve, result{Stdout: "secret", Stderr: "warn", ExitCode: 3})
-		res, outcome := s.handle(context.Background(), "req1", okArgs)
+		res, outcome := s.handle(context.Background(), "req1", testClient, okArgs)
 		if !*ran || outcome != "approved" || res != (result{Stdout: "secret", Stderr: "warn", ExitCode: 3}) {
 			t.Fatalf("got %+v %q ran=%v", res, outcome, *ran)
 		}
@@ -76,7 +129,7 @@ func TestHandle(t *testing.T) {
 
 	t.Run("cache hit runs op", func(t *testing.T) {
 		s, ran := fakeServer(func(context.Context) (verdict, error) { return verdictCacheHit, nil }, result{Stdout: "secret"})
-		res, outcome := s.handle(context.Background(), "req1", okArgs)
+		res, outcome := s.handle(context.Background(), "req1", testClient, okArgs)
 		if !*ran || outcome != "cache_hit" || res.Stdout != "secret" {
 			t.Fatalf("got %+v %q ran=%v", res, outcome, *ran)
 		}
@@ -84,7 +137,7 @@ func TestHandle(t *testing.T) {
 
 	t.Run("denied", func(t *testing.T) {
 		s, ran := fakeServer(func(context.Context) (verdict, error) { return verdictDenied, nil }, result{})
-		res, outcome := s.handle(context.Background(), "req1", okArgs)
+		res, outcome := s.handle(context.Background(), "req1", testClient, okArgs)
 		if *ran || outcome != "denied" || res.ExitCode != 1 || !strings.Contains(res.Stderr, "denied") {
 			t.Fatalf("got %+v %q ran=%v", res, outcome, *ran)
 		}
@@ -92,7 +145,7 @@ func TestHandle(t *testing.T) {
 
 	t.Run("no approval in time", func(t *testing.T) {
 		s, ran := fakeServer(waitForCtx, result{})
-		res, outcome := s.handle(context.Background(), "req1", okArgs)
+		res, outcome := s.handle(context.Background(), "req1", testClient, okArgs)
 		if *ran || outcome != "timeout" || res.ExitCode != 1 {
 			t.Fatalf("got %+v %q ran=%v", res, outcome, *ran)
 		}
@@ -103,7 +156,7 @@ func TestHandle(t *testing.T) {
 		s.approvalTimeout = time.Minute
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, outcome := s.handle(ctx, "req1", okArgs)
+		_, outcome := s.handle(ctx, "req1", testClient, okArgs)
 		if *ran || outcome != "disconnected" {
 			t.Fatalf("got %q ran=%v", outcome, *ran)
 		}
@@ -112,7 +165,7 @@ func TestHandle(t *testing.T) {
 	t.Run("rejected command never asks", func(t *testing.T) {
 		asked := false
 		s, ran := fakeServer(func(context.Context) (verdict, error) { asked = true; return verdictApproved, nil }, result{})
-		res, outcome := s.handle(context.Background(), "req1", []string{"run", "--", "env"})
+		res, outcome := s.handle(context.Background(), "req1", testClient, []string{"run", "--", "env"})
 		if asked || *ran || outcome != "rejected" || res.ExitCode != 1 {
 			t.Fatalf("got %+v %q asked=%v ran=%v", res, outcome, asked, *ran)
 		}
@@ -120,7 +173,7 @@ func TestHandle(t *testing.T) {
 
 	t.Run("op exit 127 becomes 1", func(t *testing.T) {
 		s, _ := fakeServer(approve, result{Stderr: "boom\n", ExitCode: 127})
-		res, _ := s.handle(context.Background(), "req1", okArgs)
+		res, _ := s.handle(context.Background(), "req1", testClient, okArgs)
 		if res.ExitCode != 1 || !strings.HasPrefix(res.Stderr, "op-gate: op exited 127") {
 			t.Fatalf("got %+v", res)
 		}
@@ -130,6 +183,7 @@ func TestHandle(t *testing.T) {
 func TestExecuteEndpoint(t *testing.T) {
 	s, _ := fakeServer(func(context.Context) (verdict, error) { return verdictApproved, nil }, result{Stdout: "ok"})
 	req := httptest.NewRequest(http.MethodPost, "/op/execute", strings.NewReader(`{"args":["whoami"],"timeout_ms":300000}`))
+	req.Header.Set("Authorization", "Bearer junction:"+strings.Repeat("s", 32))
 	rec := httptest.NewRecorder()
 	s.execute(rec, req)
 	if rec.Code != http.StatusOK {
@@ -138,6 +192,23 @@ func TestExecuteEndpoint(t *testing.T) {
 	var res result
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res.Stdout != "ok" {
 		t.Fatalf("body %q: %v", rec.Body.String(), err)
+	}
+}
+
+func TestExecuteWithoutClient(t *testing.T) {
+	asked := false
+	s, ran := fakeServer(func(context.Context) (verdict, error) { asked = true; return verdictApproved, nil }, result{})
+	req := httptest.NewRequest(http.MethodPost, "/op/execute", strings.NewReader(`{"args":["whoami"]}`))
+	req.Header.Set("Authorization", "Bearer placeholder")
+	rec := httptest.NewRecorder()
+	s.execute(rec, req)
+
+	var res result
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("%d %q: %v", rec.Code, rec.Body.String(), err)
+	}
+	if asked || *ran || res.ExitCode != 1 || !strings.Contains(res.Stderr, "openssl rand -hex 32") {
+		t.Fatalf("got %+v asked=%v ran=%v", res, asked, *ran)
 	}
 }
 

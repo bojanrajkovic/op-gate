@@ -47,18 +47,19 @@ func writeJSON(rw http.ResponseWriter, code int, v any) {
 }
 
 func (w *web) approvePage(rw http.ResponseWriter, r *http.Request) {
-	args, st, ok := w.approvals.view(r.PathValue("id"))
+	c, args, st, ok := w.approvals.view(r.PathValue("id"))
 	if !ok {
 		rw.WriteHeader(http.StatusNotFound)
 		pages.ExecuteTemplate(rw, "gone", nil)
 		return
 	}
 	pages.ExecuteTemplate(rw, "approve", struct {
+		Client  string
 		Command string
 		State   string
 		Pending bool
 		Cached  bool
-	}{"op " + quoteArgs(args), st.String(), st == pending, st == approvedAndCached})
+	}{c.String(), "op " + quoteArgs(args), st.String(), st == pending, st == approvedAndCached})
 }
 
 func (w *web) approveOptions(rw http.ResponseWriter, r *http.Request) {
@@ -200,7 +201,7 @@ const say = t => { document.getElementById('msg').textContent = t; };
 {{define "gone"}}{{template "head"}}<h1>op-gate</h1><p>This request is unknown or has expired.</p>{{end}}
 
 {{define "approve"}}{{template "head"}}<h1>op-gate</h1>
-<p>Claude wants to run:</p><code>{{.Command}}</code>
+<p>{{.Client}} wants to run:</p><code>{{.Command}}</code>
 {{if .Pending}}
 <button onclick="approve()">Approve with Face ID</button>
 <button class="cache" onclick="approve(true)">Approve and cache for 1 hour</button>

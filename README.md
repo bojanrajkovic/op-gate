@@ -13,7 +13,7 @@ op-gate speaks op-forward's wire protocol, so the stock op-forward `op` shim rea
 OP_FORWARD_ADDR=tcp://op-gate.example.com:18340 op read "op://Agents/GitHub Token/credential"
 ```
 
-Your phone gets a Pushover notification: "An op command is waiting for your approval." Its link opens the approval page in Safari, which shows `op read "op://Agents/GitHub Token/credential"`. **Approve** asks for Face ID. Then the command's output comes back to the caller as if `op` had run locally.
+Your phone gets a Pushover notification: "An op command is waiting for your approval." Its link opens the approval page in Safari, which shows the client that asked and `op read "op://Agents/GitHub Token/credential"`. **Approve** asks for Face ID. Then the command's output comes back to the caller as if `op` had run locally.
 
 ## How it works
 
@@ -55,11 +55,11 @@ The Pushover message never includes the command, because Pushover's servers woul
 
 ## Cached approvals
 
-Agents often run the same command several times in a few minutes. **Approve and cache for 1 hour** approves the request with the same passkey check as **Approve**, and also lets that exact command run again without asking you.
+Agents often run the same command several times in a few minutes. **Approve and cache for 1 hour** approves the request with the same passkey check as **Approve**, and also lets that exact command from the same client run again without asking you.
 
 A cached approval:
 
-- matches only the exact argument list. `op read "op://Agents/X/credential"` doesn't cover `op read "op://Agents/X/credential" --no-newline`.
+- matches only the same client (see [Client tokens](#client-tokens)) and the exact argument list. `op read "op://Agents/X/credential"` doesn't cover `op read "op://Agents/X/credential" --no-newline`.
 - lapses after 5 minutes without use, and never lasts more than an hour after your tap, however often it's used.
 - stores the approval, not the output. `op` runs again for each request, so a rotated secret comes back new.
 - sends no notification and opens no page when it's used.
@@ -118,6 +118,7 @@ Every response is HTTP 200 with op-forward's JSON body, because the client treat
 | Situation | Exit code | stderr |
 |---|---|---|
 | Approved | `op`'s own | `op`'s own |
+| No valid client token | 1 | `op-gate: this client has no token`, followed by setup steps |
 | Not allowed | 1 | `op-gate: "<cmd>" is not allowed` |
 | Denied | 1 | `op-gate: denied` |
 | No approval within 4 minutes | 1 | `op-gate: no approval within 4m0s` |
@@ -145,23 +146,38 @@ If the client disconnects, the request expires, and its page says so.
 | `APPROVAL_LISTEN_ADDR` | no | Approval page listener. Defaults to `:8080`. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no | Enables trace export over OTLP/HTTP, along with the other standard `OTEL_*` variables. |
 
-### Client token files
+### Client tokens
 
-The op-forward client refuses to send a request without token files. op-gate doesn't check them, so placeholders with a far-future expiry are enough. That expiry also keeps the client from calling `/token/refresh`, which op-gate doesn't implement.
+op-gate identifies each client by its token. The op-forward client sends the first line of `access.token` in its token directory as a bearer token. op-gate expects it in the form `<name>:<secret>`:
+
+- `name` is 1 to 32 characters of `a-z`, `0-9`, `.`, and `-`. Use the machine's short hostname. The approval page shows it, but nothing verifies it.
+- `secret` is at least 32 characters. Generate it randomly.
+
+op-gate identifies the client by the SHA-256 of the whole token. The approval page, logs, and spans show its first 8 hex characters next to the name, so two clients claiming the same name still look different. A request without a valid token is rejected with setup steps on stderr.
 
 ```sh
 dir=~/.cache/op-gate
 mkdir -p "$dir" && chmod 700 "$dir"
-printf 'placeholder\n2099-01-01T00:00:00Z\n' > "$dir/access.token"
+name=$(hostname -s | tr 'A-Z' 'a-z' | tr -c 'a-z0-9.\n-' '-' | cut -c1-32)
+printf '%s:%s\n2099-01-01T00:00:00Z\n' "$name" "$(openssl rand -hex 32)" > "$dir/access.token"
 cp "$dir/access.token" "$dir/refresh.token"
+chmod 600 "$dir"/*.token
 export OP_FORWARD_TOKEN_DIR="$dir"
 ```
+
+The client refuses to send a request without both files. The far-future expiry keeps it from calling `/token/refresh`, which op-gate doesn't implement.
+
+Everything that shares a token directory is one client, so every agent on a machine shares its cached approvals. Keep a machine's token once it's set: a new token is a new client, with none of the old one's cached approvals.
+
+### Agent skill
+
+[`skill/SKILL.md`](skill/SKILL.md) teaches a Claude Code agent to use op-gate: the allowed commands, what **Approve and cache** means, what to do after a denial, and how to set up a client token. Install it on each machine by copying it to `~/.claude/skills/op-gate/SKILL.md`.
 
 ## Operations
 
 - **Run one replica.** Pending requests live in memory, so a second instance would hold requests the first doesn't know about. A restart fails any request that's waiting.
-- **Logs** are JSON on stdout: one line per request with its ID, subcommand, outcome, exit code, and duration. A request answered from a cached approval has outcome `cache_hit`, and a `cached approval used` line before it names the request that created the approval in `approved_by`. They never include arguments or output, since arguments carry item names. Every line has `"service":"op-gate"`, and lines logged inside a span carry its `trace_id` and `span_id`, so a log pipeline can link them to traces.
-- **Traces:** spans for each request, the Pushover call, the passkey check, and each `op` run, with the request ID and outcome as attributes. A cache hit's request span also carries `op_gate.approved_by`.
+- **Logs** are JSON on stdout: one line per request with its ID, client (`client_id`, the short ID, and `client_name`), subcommand, outcome, exit code, and duration. A request without a valid token has outcome `no_client` and no client fields. A request answered from a cached approval has outcome `cache_hit`, and a `cached approval used` line before it names the request that created the approval in `approved_by`. They never include arguments or output, since arguments carry item names. Every line has `"service":"op-gate"`, and lines logged inside a span carry its `trace_id` and `span_id`, so a log pipeline can link them to traces.
+- **Traces:** spans for each request, the Pushover call, the passkey check, and each `op` run, with the request ID, client, and outcome as attributes. A cache hit's request span also carries `op_gate.approved_by`.
 - **`op` upgrades:** the base image is pinned by digest. Renovate opens upgrade PRs, which aren't automerged, because a renamed subcommand would change what the allowlist allows.
 
 ## Security model
@@ -170,7 +186,7 @@ op-gate protects against an agent reading secrets through ordinary `op` calls th
 
 It does not protect against an agent with other ways to reach the secrets. One example is cluster credentials that can read op-gate's service account token or change its passkeys directory. The approval is only as strong as the weakest credential the calling machine already holds.
 
-A cached approval works for any caller that can reach port 18340, because op-gate doesn't know who's calling. If one agent's command is cached, another agent on the same network can run that exact command without asking you until the approval lapses. Restart op-gate to clear every cached approval.
+A cached approval works only for the client whose request you approved. Anything that can read that client's token file can act as the client, including other processes running as the same user on that machine. The token travels as a bearer token over plain HTTP, so keep port 18340 on a private network. A client's name is whatever its token claims; compare the 8-character ID on the approval page when it matters. Restart op-gate to clear every cached approval.
 
 ## Development
 

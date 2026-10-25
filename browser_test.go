@@ -134,7 +134,7 @@ func TestPageScripts(t *testing.T) {
 	if ok := <-result; !ok {
 		t.Fatal("cached request not approved")
 	}
-	if v, _ := w.approvals.ask(ctx, "req3", []string{"read", "op://Agent/GitHub Token/credential"}); v != verdictCacheHit {
+	if v, _ := w.approvals.ask(ctx, "req3", testClient, []string{"read", "op://Agent/GitHub Token/credential"}); v != verdictCacheHit {
 		t.Fatalf("same command afterwards = %v, want a cache hit", v)
 	}
 }

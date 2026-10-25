@@ -50,7 +50,7 @@ func TestAsk(t *testing.T) {
 
 	t.Run("notification links to the request's page", func(t *testing.T) {
 		a, links := newTestApprovals(nil)
-		go a.ask(context.Background(), "req2", args)
+		go a.ask(context.Background(), "req2", testClient, args)
 		if got := <-links; got != "https://op-gate.example/approve/req2" {
 			t.Fatalf("link = %q", got)
 		}
@@ -60,10 +60,10 @@ func TestAsk(t *testing.T) {
 	t.Run("approve", func(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		decideAfterNotify(a, links, approved)
-		if v, err := a.ask(context.Background(), "req1", args); v != verdictApproved || err != nil {
+		if v, err := a.ask(context.Background(), "req1", testClient, args); v != verdictApproved || err != nil {
 			t.Fatalf("ask = %v, %v", v, err)
 		}
-		if _, st, _ := a.view("req1"); st != approved {
+		if _, _, st, _ := a.view("req1"); st != approved {
 			t.Fatalf("page state = %v", st)
 		}
 	})
@@ -71,7 +71,7 @@ func TestAsk(t *testing.T) {
 	t.Run("deny", func(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		decideAfterNotify(a, links, denied)
-		if v, err := a.ask(context.Background(), "req1", args); v != verdictDenied || err != nil {
+		if v, err := a.ask(context.Background(), "req1", testClient, args); v != verdictDenied || err != nil {
 			t.Fatalf("ask = %v, %v", v, err)
 		}
 	})
@@ -80,10 +80,10 @@ func TestAsk(t *testing.T) {
 		a, _ := newTestApprovals(nil)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
-		if _, err := a.ask(ctx, "req1", args); !errors.Is(err, context.DeadlineExceeded) {
+		if _, err := a.ask(ctx, "req1", testClient, args); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("err = %v", err)
 		}
-		if _, st, _ := a.view("req1"); st != expired {
+		if _, _, st, _ := a.view("req1"); st != expired {
 			t.Fatalf("page state = %v, want expired", st)
 		}
 		if st, _ := a.decide("req1", approved); st != expired {
@@ -93,10 +93,10 @@ func TestAsk(t *testing.T) {
 
 	t.Run("failed notification fails the request", func(t *testing.T) {
 		a, _ := newTestApprovals(errors.New("pushover down"))
-		if _, err := a.ask(context.Background(), "req1", args); err == nil {
+		if _, err := a.ask(context.Background(), "req1", testClient, args); err == nil {
 			t.Fatal("ask succeeded without a notification")
 		}
-		if _, st, _ := a.view("req1"); st != failed {
+		if _, _, st, _ := a.view("req1"); st != failed {
 			t.Fatalf("page state = %v, want failed", st)
 		}
 	})
@@ -110,7 +110,7 @@ func TestAsk(t *testing.T) {
 			cancel()
 		}()
 		// Either branch of ask's select may fire; both must report the approval.
-		if v, _ := a.ask(ctx, "req1", args); v != verdictApproved {
+		if v, _ := a.ask(ctx, "req1", testClient, args); v != verdictApproved {
 			t.Fatal("approval lost to a simultaneous cancel")
 		}
 	})
@@ -123,7 +123,7 @@ func TestAsk(t *testing.T) {
 			a.decide("req1", approvedAndCached)
 			cancel()
 		}()
-		if v, _ := a.ask(ctx, "req1", args); v != verdictApproved {
+		if v, _ := a.ask(ctx, "req1", testClient, args); v != verdictApproved {
 			t.Fatal("approval lost to a simultaneous cancel")
 		}
 	})
@@ -139,9 +139,9 @@ func TestAsk(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		a.keep = 10 * time.Millisecond
 		decideAfterNotify(a, links, denied)
-		a.ask(context.Background(), "req1", args)
+		a.ask(context.Background(), "req1", testClient, args)
 		time.Sleep(50 * time.Millisecond)
-		if _, _, ok := a.view("req1"); ok {
+		if _, _, _, ok := a.view("req1"); ok {
 			t.Fatal("final request kept forever")
 		}
 	})
@@ -154,16 +154,16 @@ func approveVia(t *testing.T, a *approvals, links chan string, id string, args [
 		<-links
 		a.decide(id, to)
 	}()
-	if v, err := a.ask(context.Background(), id, args); v != verdictApproved || err != nil {
+	if v, err := a.ask(context.Background(), id, testClient, args); v != verdictApproved || err != nil {
 		t.Fatalf("ask = %v, %v", v, err)
 	}
 }
 
 // notifies reports whether ask for id sent a notification, denying it if so.
-func notifies(a *approvals, links chan string, id string, args []string) bool {
+func notifies(a *approvals, links chan string, id string, c client, args []string) bool {
 	done := make(chan verdict, 1)
 	go func() {
-		v, _ := a.ask(context.Background(), id, args)
+		v, _ := a.ask(context.Background(), id, c, args)
 		done <- v
 	}()
 	select {
@@ -183,13 +183,13 @@ func TestCache(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			a, links := newTestApprovals(nil)
 			approveVia(t, a, links, "req1", args, approvedAndCached)
-			if v, err := a.ask(context.Background(), "req2", args); v != verdictCacheHit || err != nil {
+			if v, err := a.ask(context.Background(), "req2", testClient, args); v != verdictCacheHit || err != nil {
 				t.Fatalf("ask = %v, %v", v, err)
 			}
 			if len(links) != 0 {
 				t.Fatal("a cache hit sent a notification")
 			}
-			if _, _, ok := a.view("req2"); ok {
+			if _, _, _, ok := a.view("req2"); ok {
 				t.Fatal("a cache hit opened an approval page")
 			}
 		})
@@ -198,7 +198,7 @@ func TestCache(t *testing.T) {
 	t.Run("plain approve doesn't cache", func(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		approveVia(t, a, links, "req1", args, approved)
-		if !notifies(a, links, "req2", args) {
+		if !notifies(a, links, "req2", testClient, args) {
 			t.Fatal("a one-time approval was reused")
 		}
 	})
@@ -206,12 +206,20 @@ func TestCache(t *testing.T) {
 	t.Run("only the exact arguments match", func(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		approveVia(t, a, links, "req1", args, approvedAndCached)
-		if !notifies(a, links, "req2", append(args, "--no-newline")) {
+		if !notifies(a, links, "req2", testClient, append(args, "--no-newline")) {
 			t.Fatal("different arguments used the cached approval")
 		}
 		// NUL joins the key, so regrouping the same words is a different command.
-		if !notifies(a, links, "req3", []string{"read", "op://Agent/x/credential --no-newline"}) {
+		if !notifies(a, links, "req3", testClient, []string{"read", "op://Agent/x/credential --no-newline"}) {
 			t.Fatal("regrouped arguments used the cached approval")
+		}
+	})
+
+	t.Run("another client's cached approval doesn't apply", func(t *testing.T) {
+		a, links := newTestApprovals(nil)
+		approveVia(t, a, links, "req1", args, approvedAndCached)
+		if !notifies(a, links, "req2", otherClient, args) {
+			t.Fatal("a different client used the cached approval")
 		}
 	})
 
@@ -220,7 +228,7 @@ func TestCache(t *testing.T) {
 			a, links := newTestApprovals(nil)
 			approveVia(t, a, links, "req1", args, approvedAndCached)
 			time.Sleep(cacheIdle)
-			if !notifies(a, links, "req2", args) {
+			if !notifies(a, links, "req2", testClient, args) {
 				t.Fatal("cached approval outlived its idle timeout")
 			}
 		})
@@ -233,12 +241,12 @@ func TestCache(t *testing.T) {
 			start := time.Now()
 			for time.Since(start)+4*time.Minute < cacheMax {
 				time.Sleep(4 * time.Minute)
-				if v, _ := a.ask(context.Background(), "hit", args); v != verdictCacheHit {
+				if v, _ := a.ask(context.Background(), "hit", testClient, args); v != verdictCacheHit {
 					t.Fatalf("miss after %v of steady use", time.Since(start))
 				}
 			}
 			time.Sleep(cacheMax - time.Since(start))
-			if !notifies(a, links, "req2", args) {
+			if !notifies(a, links, "req2", testClient, args) {
 				t.Fatal("cached approval outlived its cap")
 			}
 		})
@@ -248,12 +256,12 @@ func TestCache(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		a.ask(ctx, "req1", args)
+		a.ask(ctx, "req1", testClient, args)
 		<-links
 		if st, _ := a.decide("req1", approvedAndCached); st != expired {
 			t.Fatalf("state = %v", st)
 		}
-		if !notifies(a, links, "req2", args) {
+		if !notifies(a, links, "req2", testClient, args) {
 			t.Fatal("a late tap cached an approval")
 		}
 	})
@@ -266,7 +274,7 @@ func TestCache(t *testing.T) {
 
 		a, links := newTestApprovals(nil)
 		approveVia(t, a, links, "req1", args, approvedAndCached)
-		a.ask(context.Background(), "req2", args)
+		a.ask(context.Background(), "req2", testClient, args)
 
 		var line map[string]any
 		if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
