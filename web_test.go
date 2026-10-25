@@ -52,7 +52,7 @@ func pendingRequest(t *testing.T, w *web, id string) <-chan bool {
 	notified := make(chan struct{})
 	w.approvals.notify = func(context.Context, string) error { close(notified); return nil }
 	go func() {
-		v, _ := w.approvals.ask(context.Background(), id, []string{"read", "op://Agent/GitHub Token/credential"})
+		v, _ := w.approvals.ask(context.Background(), id, testClient, []string{"read", "op://Agent/GitHub Token/credential"})
 		got <- v == verdictApproved
 	}()
 	<-notified
@@ -75,7 +75,8 @@ func TestApprovalPage(t *testing.T) {
 		w := newTestWeb(fakeKeys{})
 		pendingRequest(t, w, "req1")
 		rec := do(t, w.handler(), "GET", "/approve/req1", "")
-		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "op://Agent/GitHub Token/credential") || !strings.Contains(rec.Body.String(), "Approve") {
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "op://Agent/GitHub Token/credential") || !strings.Contains(rec.Body.String(), "Approve") ||
+			!strings.Contains(rec.Body.String(), "junction ("+testClient.short()+") wants to run") {
 			t.Fatalf("%d %s", rec.Code, rec.Body)
 		}
 	})
@@ -123,7 +124,7 @@ func TestApprovalPage(t *testing.T) {
 		if page := do(t, h, "GET", "/approve/req1", ""); !strings.Contains(page.Body.String(), "without asking for up to an hour") {
 			t.Fatalf("page doesn't say the approval is cached: %s", page.Body)
 		}
-		if v, _ := w.approvals.ask(context.Background(), "req2", []string{"read", "op://Agent/GitHub Token/credential"}); v != verdictCacheHit {
+		if v, _ := w.approvals.ask(context.Background(), "req2", testClient, []string{"read", "op://Agent/GitHub Token/credential"}); v != verdictCacheHit {
 			t.Fatalf("same command afterwards = %v, want a cache hit", v)
 		}
 	})
@@ -136,7 +137,7 @@ func TestApprovalPage(t *testing.T) {
 		if rec := do(t, h, "POST", "/approve/req1/verify", "forged"); rec.Code != http.StatusForbidden {
 			t.Fatalf("forged verify: %d", rec.Code)
 		}
-		if _, st, _ := w.approvals.view("req1"); st != pending {
+		if _, _, st, _ := w.approvals.view("req1"); st != pending {
 			t.Fatalf("state = %v", st)
 		}
 		// The challenge was used up by the failed attempt; a replay needs new options.
