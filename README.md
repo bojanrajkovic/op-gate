@@ -26,6 +26,7 @@ sequenceDiagram
     C->>G: POST /op/execute {"args": [...]} (TCP :18340)
     G->>G: allowlist check
     G->>PO: "approval needed" + link (ttl 240s)
+    G->>G: look up names for any vault or item IDs (cached)
     PO->>P: notification
     P->>G: GET /approve/<id> (shows the command)
     P->>G: passkey assertion, signed after Face ID
@@ -52,6 +53,34 @@ The Pushover message never includes the command, because Pushover's servers woul
 - **Deny** needs no passkey, since denying can't release anything.
 - Each request has a random ID and one challenge at a time. A challenge can be answered once, right or wrong.
 - A request is decided once. After it's approved, denied, or expired, its page only shows that outcome. The page never shows `op`'s output.
+
+## Names on the approval page
+
+Agents often refer to vaults and items by ID, such as `op read "op://a1b2.../c3d4.../credential"`. The approval page lists a name for each ID under the command, so you know what you're approving:
+
+```
+vault a1b2c3d4 = Agents
+item  c3d4e5f6 = GitHub Token
+```
+
+The command above the list is still exactly what `op` runs. A line can also say:
+
+- `item c3d4e5f6 not found`: no vault op-gate's service account can read has that ID. The command will fail.
+- `item c3d4e5f6 not found in Private`: the item exists, but not in the vault the command names. The command will fail.
+- `Couldn't look up names.`: the lookup itself failed, and the last good list doesn't have every ID. It says nothing about the command.
+
+op-gate finds IDs in `op://` references, in `--vault`, and in the arguments of `item get`, `document get`, and `vault get`. Any value of 26 lowercase letters and digits counts as an ID, so a name of that shape reads as `not found`, even though `op` finds it. Other names are left alone, since the command already shows them.
+
+The names come from `op vault list` and `op item list`, which return titles but no field values. op-gate never runs `op item get` for a lookup, because that returns field values, and op-gate would read secrets you haven't approved.
+
+op-gate caches every vault and item name it can read, because service accounts have rate limits:
+
+- It starts a lookup as soon as a request arrives, so the names are usually ready when you open the page. The page waits up to 5 seconds for them.
+- The cache lives 10 minutes, so a renamed item can show its old name until then.
+- An ID that's missing from the cache refreshes it early, at most once every 30 seconds. A failed lookup also waits 30 seconds before the next try, and the page keeps using the last good list meanwhile.
+- Commands without IDs, and cached approvals, look nothing up.
+
+Names appear only on the approval page, and only while the request is pending. They never reach Pushover, logs, or spans.
 
 ## Cached approvals
 
@@ -176,8 +205,8 @@ Everything that shares a token directory is one client, so every agent on a mach
 ## Operations
 
 - **Run one replica.** Pending requests live in memory, so a second instance would hold requests the first doesn't know about. A restart fails any request that's waiting.
-- **Logs** are JSON on stdout: one line per request with its ID, client (`client_id`, the short ID, and `client_name`), subcommand, outcome, exit code, and duration. A request without a valid token has outcome `no_client` and no client fields. A request answered from a cached approval has outcome `cache_hit`, and a `cached approval used` line before it names the request that created the approval in `approved_by`. They never include arguments or output, since arguments carry item names. Every line has `"service":"op-gate"`, and lines logged inside a span carry its `trace_id` and `span_id`, so a log pipeline can link them to traces.
-- **Traces:** spans for each request, the Pushover call, the passkey check, and each `op` run, with the request ID, client, and outcome as attributes. A cache hit's request span also carries `op_gate.approved_by`.
+- **Logs** are JSON on stdout: one line per request with its ID, client (`client_id`, the short ID, and `client_name`), subcommand, outcome, exit code, and duration. A request without a valid token has outcome `no_client` and no client fields. A request answered from a cached approval has outcome `cache_hit`, and a `cached approval used` line before it names the request that created the approval in `approved_by`. A failed name lookup logs `looking up names` once, with op's error. They never include arguments, output, or looked-up names, since those carry item names. Every line has `"service":"op-gate"`, and lines logged inside a span carry its `trace_id` and `span_id`, so a log pipeline can link them to traces.
+- **Traces:** spans for each request, the Pushover call, the passkey check, each name lookup, and each `op` run, with the request ID, client, and outcome as attributes. A cache hit's request span also carries `op_gate.approved_by`. A name lookup's span (`op_gate.names`) records how many IDs it looked up, how many it didn't find, and whether it refreshed the cache, without naming anything.
 - **`op` upgrades:** the base image is pinned by digest. Renovate opens upgrade PRs, which aren't automerged, because a renamed subcommand would change what the allowlist allows.
 
 ## Security model

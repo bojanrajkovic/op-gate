@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -79,6 +81,44 @@ func TestApprovalPage(t *testing.T) {
 			!strings.Contains(rec.Body.String(), "junction ("+testClient.short()+") wants to run") {
 			t.Fatalf("%d %s", rec.Code, rec.Body)
 		}
+	})
+
+	t.Run("names the IDs in the command while pending", func(t *testing.T) {
+		w := newTestWeb(fakeKeys{})
+		w.approvals.nameCache, _ = countingNames(func() (snapshot, error) { return testSnapshot, nil })
+		notified := make(chan struct{})
+		w.approvals.notify = func(context.Context, string) error { close(notified); return nil }
+		go w.approvals.ask(context.Background(), "req1", testClient, []string{"item", "get", githubID, "--vault", otherID})
+		<-notified
+		h := w.handler()
+		body := do(t, h, "GET", "/approve/req1", "").Body.String()
+		if !strings.Contains(body, "<li>vault private0 = Private</li>") || !strings.Contains(body, "<li>item github00 not found in Private</li>") {
+			t.Fatalf("page = %s", body)
+		}
+		w.approvals.decide("req1", denied)
+		if body := do(t, h, "GET", "/approve/req1", "").Body.String(); strings.Contains(body, "<li>") {
+			t.Fatalf("a decided page still lists names: %s", body)
+		}
+	})
+
+	t.Run("a request decided while names load offers no buttons", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			w := newTestWeb(fakeKeys{})
+			w.approvals.nameCache, _ = countingNames(func() (snapshot, error) {
+				time.Sleep(2 * time.Second)
+				return testSnapshot, nil
+			})
+			w.approvals.notify = func(context.Context, string) error { return nil }
+			go w.approvals.ask(context.Background(), "req1", testClient, []string{"vault", "get", agentsID})
+			synctest.Wait()
+			go func() {
+				time.Sleep(time.Second)
+				w.approvals.decide("req1", denied)
+			}()
+			if body := do(t, w.handler(), "GET", "/approve/req1", "").Body.String(); strings.Contains(body, "<button") || strings.Contains(body, "<li>") {
+				t.Fatalf("page = %s", body)
+			}
+		})
 	})
 
 	t.Run("unknown request", func(t *testing.T) {

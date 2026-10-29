@@ -285,3 +285,24 @@ func TestCache(t *testing.T) {
 		}
 	})
 }
+
+func TestAskWarmsNames(t *testing.T) {
+	// An unknown item makes every lookup want a refresh once 30s pass.
+	args := []string{"read", "op://" + agentsID + "/" + unknown + "/credential"}
+	synctest.Test(t, func(t *testing.T) {
+		a, links := newTestApprovals(nil)
+		n, calls := countingNames(func() (snapshot, error) { return testSnapshot, nil })
+		a.nameCache = n
+		approveVia(t, a, links, "req1", args, approvedAndCached)
+		synctest.Wait()
+		if *calls != 1 {
+			t.Fatalf("a new request looked names up %d times", *calls)
+		}
+		time.Sleep(namesRetry)
+		a.ask(context.Background(), "req2", testClient, args)
+		synctest.Wait()
+		if *calls != 1 {
+			t.Fatal("a cache hit looked names up")
+		}
+	})
+}

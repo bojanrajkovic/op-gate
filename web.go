@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -47,7 +48,16 @@ func writeJSON(rw http.ResponseWriter, code int, v any) {
 }
 
 func (w *web) approvePage(rw http.ResponseWriter, r *http.Request) {
-	c, args, st, ok := w.approvals.view(r.PathValue("id"))
+	id := r.PathValue("id")
+	var names []string // only while pending: they're there to help decide
+	if _, args, st, ok := w.approvals.view(id); ok && st == pending {
+		ctx, cancel := context.WithTimeout(r.Context(), namesWait)
+		defer cancel()
+		names = w.approvals.nameCache.describe(ctx, id, args)
+	}
+	// Read the state after the lookup, which can take seconds: the request may
+	// have been decided meanwhile, and its page mustn't offer the buttons.
+	c, args, st, ok := w.approvals.view(id)
 	if !ok {
 		rw.WriteHeader(http.StatusNotFound)
 		pages.ExecuteTemplate(rw, "gone", nil)
@@ -56,10 +66,11 @@ func (w *web) approvePage(rw http.ResponseWriter, r *http.Request) {
 	pages.ExecuteTemplate(rw, "approve", struct {
 		Client  string
 		Command string
+		Names   []string
 		State   string
 		Pending bool
 		Cached  bool
-	}{c.String(), "op " + quoteArgs(args), st.String(), st == pending, st == approvedAndCached})
+	}{c.String(), "op " + quoteArgs(args), names, st.String(), st == pending, st == approvedAndCached})
 }
 
 func (w *web) approveOptions(rw http.ResponseWriter, r *http.Request) {
@@ -184,7 +195,7 @@ var pages = template.Must(template.New("").Parse(`
  button{font:inherit;width:100%;padding:.9rem;margin:.4rem 0;border:0;border-radius:.6rem;color:#fff;background:#0a7}
  button.deny{background:#c33} button.cache{color:#0a7;background:none;box-shadow:inset 0 0 0 2px #0a7}
  .hint{font-size:14px;opacity:.7;margin:0 0 .8rem} textarea{width:100%;height:9rem;font:13px ui-monospace,monospace}
- #msg{min-height:1.5rem;margin-top:1rem}
+ #msg{min-height:1.5rem;margin-top:1rem} ul.names{font:14px ui-monospace,monospace;list-style:none;padding:0;margin:.5rem 0 1rem}
 </style>
 <script>
 const b64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
@@ -203,6 +214,7 @@ const say = t => { document.getElementById('msg').textContent = t; };
 {{define "approve"}}{{template "head"}}<h1>op-gate</h1>
 <p>{{.Client}} wants to run:</p><code>{{.Command}}</code>
 {{if .Pending}}
+{{with .Names}}<ul class="names">{{range .}}<li>{{.}}</li>{{end}}</ul>{{end}}
 <button onclick="approve()">Approve with Face ID</button>
 <button class="cache" onclick="approve(true)">Approve and cache for 1 hour</button>
 <p class="hint">op-gate runs this exact command again without asking, until it goes unused for 5 minutes or an hour passes.</p>
