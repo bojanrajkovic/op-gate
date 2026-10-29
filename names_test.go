@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -228,28 +229,38 @@ func TestNamesLines(t *testing.T) {
 }
 
 func TestListNames(t *testing.T) {
-	var ran [][]string
-	run := func(_ context.Context, args []string) result {
-		ran = append(ran, args)
-		switch args[0] {
-		case "vault":
-			return result{Stdout: `[{"id":"` + agentsID + `","name":"Agents","items":1},{"id":"` + otherID + `","name":"Private"}]`}
-		default:
-			return result{Stdout: `[{"id":"` + githubID + `","title":"GitHub Token","category":"LOGIN",` +
-				`"additional_information":"someone","vault":{"id":"` + agentsID + `","name":"Agents"}}]`}
+	synctest.Test(t, func(t *testing.T) {
+		var mu sync.Mutex
+		var ran []string
+		run := func(_ context.Context, args []string) result {
+			mu.Lock()
+			ran = append(ran, strings.Join(args, " "))
+			mu.Unlock()
+			time.Sleep(time.Second)
+			switch args[0] {
+			case "vault":
+				return result{Stdout: `[{"id":"` + agentsID + `","name":"Agents","items":1},{"id":"` + otherID + `","name":"Private"}]`}
+			default:
+				return result{Stdout: `[{"id":"` + githubID + `","title":"GitHub Token","category":"LOGIN",` +
+					`"additional_information":"someone","vault":{"id":"` + agentsID + `","name":"Agents"}}]`}
+			}
 		}
-	}
-	s, err := listNames(t.Context(), run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if line, _ := s.itemLine(itemRef{githubID, "Agents"}); line != "item github00 = GitHub Token" || s.vaults[otherID] != "Private" {
-		t.Fatalf("snapshot = %+v", s)
-	}
-	want := [][]string{{"vault", "list", "--format", "json"}, {"item", "list", "--format", "json"}}
-	if !slices.EqualFunc(ran, want, slices.Equal) {
-		t.Fatalf("ran %q; only list commands may run, since item get returns field values", ran)
-	}
+		start := time.Now()
+		s, err := listNames(t.Context(), run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if took := time.Since(start); took != time.Second {
+			t.Errorf("listing took %v; the two calls should run at once", took)
+		}
+		if line, _ := s.itemLine(itemRef{githubID, "Agents"}); line != "item github00 = GitHub Token" || s.vaults[otherID] != "Private" {
+			t.Fatalf("snapshot = %+v", s)
+		}
+		slices.Sort(ran)
+		if want := []string{"item list --format json", "vault list --format json"}; !slices.Equal(ran, want) {
+			t.Fatalf("ran %q; only list commands may run, since item get returns field values", ran)
+		}
+	})
 
 	failing := func(context.Context, []string) result { return result{Stderr: "rate limit exceeded\n", ExitCode: 1} }
 	if _, err := listNames(t.Context(), failing); err == nil || !strings.Contains(err.Error(), "rate limit exceeded") {

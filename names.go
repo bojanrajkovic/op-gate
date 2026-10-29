@@ -13,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -275,10 +276,10 @@ func listNames(ctx context.Context, run func(context.Context, []string) result) 
 			ID string `json:"id"`
 		} `json:"vault"`
 	}
-	if err := opJSON(ctx, run, &vaults, "vault", "list"); err != nil {
-		return snapshot{}, err
-	}
-	if err := opJSON(ctx, run, &items, "item", "list"); err != nil {
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return opJSON(gctx, run, &vaults, "vault", "list") })
+	g.Go(func() error { return opJSON(gctx, run, &items, "item", "list") })
+	if err := g.Wait(); err != nil {
 		return snapshot{}, err
 	}
 
