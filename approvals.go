@@ -101,6 +101,7 @@ type approvals struct {
 	baseURL string // where the approval page is served, e.g. https://op-gate.example.com
 	notify  func(ctx context.Context, link string) error
 	keep    time.Duration // how long a final request's page still shows its outcome
+	names   *names        // names the IDs in a command for its page; nil looks nothing up
 
 	mu   sync.Mutex
 	reqs map[string]*approval
@@ -139,6 +140,8 @@ func (a *approvals) ask(ctx context.Context, id string, c client, args []string)
 		a.decide(id, failed)
 		return verdictDenied, fmt.Errorf("sending notification: %w", err)
 	}
+	// Warm the names while the notification reaches the phone, so the page needn't wait.
+	go a.names.lines(context.WithoutCancel(ctx), id, args)
 
 	select {
 	case st := <-r.decided:
