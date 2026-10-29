@@ -98,10 +98,10 @@ type approval struct {
 // approvals tracks requests waiting on the owner. It holds every request in
 // memory, so op-gate runs as a single replica.
 type approvals struct {
-	baseURL string // where the approval page is served, e.g. https://op-gate.example.com
-	notify  func(ctx context.Context, link string) error
-	keep    time.Duration // how long a final request's page still shows its outcome
-	names   *names        // names the IDs in a command for its page; nil looks nothing up
+	baseURL   string // where the approval page is served, e.g. https://op-gate.example.com
+	notify    func(ctx context.Context, link string) error
+	keep      time.Duration // how long a final request's page still shows its outcome
+	nameCache *nameCache    // names the IDs in a command for its page; nil looks nothing up
 
 	mu   sync.Mutex
 	reqs map[string]*approval
@@ -141,7 +141,7 @@ func (a *approvals) ask(ctx context.Context, id string, c client, args []string)
 		return verdictDenied, fmt.Errorf("sending notification: %w", err)
 	}
 	// Warm the names while the notification reaches the phone, so the page needn't wait.
-	go a.names.lines(context.WithoutCancel(ctx), id, args)
+	go a.nameCache.describe(context.WithoutCancel(ctx), id, args)
 
 	select {
 	case st := <-r.decided:

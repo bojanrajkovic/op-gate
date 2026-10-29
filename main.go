@@ -120,7 +120,7 @@ func run() error {
 		client: &http.Client{Timeout: 15 * time.Second}}
 
 	a := newApprovals(approvalURL, push.notify)
-	a.names = &names{list: func(ctx context.Context) (snapshot, error) { return listNames(ctx, runOp) }}
+	a.nameCache = &nameCache{list: func(ctx context.Context) (snapshot, error) { return listNames(ctx, runOp) }}
 	s := &server{ask: a.ask, run: runOp, approvalTimeout: approvalTimeout, opTimeout: opTimeout}
 
 	// Two listeners, one job each: op-forward's protocol, and the approval

@@ -292,7 +292,7 @@ func TestAskWarmsNames(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, links := newTestApprovals(nil)
 		n, calls := countingNames(func() (snapshot, error) { return testSnapshot, nil })
-		a.names = n
+		a.nameCache = n
 		approveVia(t, a, links, "req1", args, approvedAndCached)
 		synctest.Wait()
 		if *calls != 1 {

@@ -53,7 +53,7 @@ func (w *web) approvePage(rw http.ResponseWriter, r *http.Request) {
 	if _, args, st, ok := w.approvals.view(id); ok && st == pending {
 		ctx, cancel := context.WithTimeout(r.Context(), namesWait)
 		defer cancel()
-		names = w.approvals.names.lines(ctx, id, args)
+		names = w.approvals.nameCache.describe(ctx, id, args)
 	}
 	// Read the state after the lookup, which can take seconds: the request may
 	// have been decided meanwhile, and its page mustn't offer the buttons.

@@ -54,35 +54,55 @@ func TestFindRefs(t *testing.T) {
 
 func TestSnapshotLines(t *testing.T) {
 	vaults := []struct {
-		id    string
-		want  string
-		known bool
+		id   string
+		want string
 	}{
-		{agentsID, "vault agents00 = Agents", true},
-		{unknown, "vault unknown0 not found", false},
+		{agentsID, "vault agents00 = Agents"},
+		{unknown, "vault unknown0 not found"},
 	}
 	for _, tt := range vaults {
-		if got, known := testSnapshot.vaultLine(tt.id); got != tt.want || known != tt.known {
-			t.Errorf("vaultLine(%s) = %q, %v", tt.id, got, known)
+		if got := testSnapshot.vaultLine(tt.id); got != tt.want {
+			t.Errorf("vaultLine(%s) = %q", tt.id, got)
 		}
 	}
 	items := []struct {
-		r     itemRef
-		want  string
-		known bool
+		r    itemRef
+		want string
 	}{
-		{itemRef{githubID, ""}, "item github00 = GitHub Token", true},
-		{itemRef{githubID, agentsID}, "item github00 = GitHub Token", true},
-		{itemRef{githubID, "agents"}, "item github00 = GitHub Token", true},
-		{itemRef{githubID, otherID}, "item github00 not found in Private", true},
-		{itemRef{githubID, unknown}, "item github00 not found in vault unknown0", true},
-		{itemRef{githubID, "Nope"}, "item github00 not found in Nope", true},
-		{itemRef{unknown, ""}, "item unknown0 not found", false},
+		{itemRef{githubID, ""}, "item github00 = GitHub Token"},
+		{itemRef{githubID, agentsID}, "item github00 = GitHub Token"},
+		{itemRef{githubID, "agents"}, "item github00 = GitHub Token"},
+		{itemRef{githubID, otherID}, "item github00 not found in Private"},
+		{itemRef{githubID, unknown}, "item github00 not found in vault unknown0"},
+		{itemRef{githubID, "Nope"}, "item github00 not found in Nope"},
+		{itemRef{unknown, ""}, "item unknown0 not found"},
 	}
 	for _, tt := range items {
-		if got, known := testSnapshot.itemLine(tt.r); got != tt.want || known != tt.known {
-			t.Errorf("itemLine(%v) = %q, %v", tt.r, got, known)
+		if got := testSnapshot.itemLine(tt.r); got != tt.want {
+			t.Errorf("itemLine(%v) = %q", tt.r, got)
 		}
+	}
+}
+
+func TestDescribeRefs(t *testing.T) {
+	rs := refs{[]string{agentsID, unknown}, []itemRef{{githubID, otherID}, {unknown, ""}}}
+	tests := []struct {
+		failed      bool
+		want        []string
+		wantUnknown int
+	}{
+		{false, []string{"vault agents00 = Agents", "vault unknown0 not found",
+			"item github00 not found in Private", "item unknown0 not found"}, 2},
+		// After a failure, the unknown IDs may just be new, so they don't read as not found.
+		{true, []string{"vault agents00 = Agents", "item github00 not found in Private", namesFailed}, 2},
+	}
+	for _, tt := range tests {
+		if got, unknown := describeRefs(testSnapshot, rs, tt.failed); !slices.Equal(got, tt.want) || unknown != tt.wantUnknown {
+			t.Errorf("describeRefs(failed=%v) = %q, %d", tt.failed, got, unknown)
+		}
+	}
+	if got, _ := describeRefs(snapshot{}, refs{vaults: []string{agentsID}}, true); !slices.Equal(got, []string{namesFailed}) {
+		t.Errorf("first lookup failed: %q", got)
 	}
 }
 
@@ -106,16 +126,16 @@ func TestNeedsRefresh(t *testing.T) {
 	}
 }
 
-// countingNames returns names whose list answers with list and counts its calls.
-func countingNames(list func() (snapshot, error)) (*names, *int) {
+// countingNames returns a nameCache whose list answers with list and counts its calls.
+func countingNames(list func() (snapshot, error)) (*nameCache, *int) {
 	calls := new(int)
-	return &names{list: func(context.Context) (snapshot, error) {
+	return &nameCache{list: func(context.Context) (snapshot, error) {
 		*calls++
 		return list()
 	}}, calls
 }
 
-func TestNamesLines(t *testing.T) {
+func TestNameCacheDescribe(t *testing.T) {
 	known := []string{"read", "op://" + agentsID + "/" + githubID + "/credential"}
 	missing := []string{"read", "op://" + agentsID + "/" + unknown + "/credential"}
 	ok := func() (snapshot, error) { return testSnapshot, nil }
@@ -124,16 +144,16 @@ func TestNamesLines(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			n, calls := countingNames(ok)
 			want := []string{"vault agents00 = Agents", "item github00 = GitHub Token"}
-			if got := n.lines(t.Context(), "req1", known); !slices.Equal(got, want) {
+			if got := n.describe(t.Context(), "req1", known); !slices.Equal(got, want) {
 				t.Fatalf("lines = %q", got)
 			}
 			time.Sleep(namesTTL - time.Second)
-			n.lines(t.Context(), "req2", known)
+			n.describe(t.Context(), "req2", known)
 			if *calls != 1 {
 				t.Fatalf("calls within the TTL = %d", *calls)
 			}
 			time.Sleep(time.Second)
-			n.lines(t.Context(), "req3", known)
+			n.describe(t.Context(), "req3", known)
 			if *calls != 2 {
 				t.Fatalf("calls after the TTL = %d", *calls)
 			}
@@ -143,13 +163,13 @@ func TestNamesLines(t *testing.T) {
 	t.Run("a miss refreshes at most every 30s", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			n, calls := countingNames(ok)
-			n.lines(t.Context(), "req1", missing)
-			n.lines(t.Context(), "req2", missing)
+			n.describe(t.Context(), "req1", missing)
+			n.describe(t.Context(), "req2", missing)
 			if *calls != 1 {
 				t.Fatalf("calls = %d", *calls)
 			}
 			time.Sleep(namesRetry)
-			n.lines(t.Context(), "req3", missing)
+			n.describe(t.Context(), "req3", missing)
 			if *calls != 2 {
 				t.Fatalf("calls after 30s = %d", *calls)
 			}
@@ -160,7 +180,7 @@ func TestNamesLines(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			n, calls := countingNames(func() (snapshot, error) { return snapshot{}, errors.New("rate limited") })
 			for _, id := range []string{"req1", "req2"} {
-				if got := n.lines(t.Context(), id, known); !slices.Equal(got, []string{namesFailed}) {
+				if got := n.describe(t.Context(), id, known); !slices.Equal(got, []string{namesFailed}) {
 					t.Fatalf("lines = %q", got)
 				}
 			}
@@ -168,7 +188,7 @@ func TestNamesLines(t *testing.T) {
 				t.Fatalf("calls = %d; a failure must not retry right away", *calls)
 			}
 			time.Sleep(namesRetry)
-			n.lines(t.Context(), "req3", known)
+			n.describe(t.Context(), "req3", known)
 			if *calls != 2 {
 				t.Fatalf("calls after 30s = %d", *calls)
 			}
@@ -184,13 +204,13 @@ func TestNamesLines(t *testing.T) {
 				}
 				return testSnapshot, nil
 			})
-			n.lines(t.Context(), "req1", known)
+			n.describe(t.Context(), "req1", known)
 			fail = true
 			time.Sleep(namesTTL)
-			if got := n.lines(t.Context(), "req2", known); !slices.Equal(got, []string{"vault agents00 = Agents", "item github00 = GitHub Token"}) {
+			if got := n.describe(t.Context(), "req2", known); !slices.Equal(got, []string{"vault agents00 = Agents", "item github00 = GitHub Token"}) {
 				t.Fatalf("known IDs = %q", got)
 			}
-			if got := n.lines(t.Context(), "req3", missing); !slices.Equal(got, []string{"vault agents00 = Agents", namesFailed}) {
+			if got := n.describe(t.Context(), "req3", missing); !slices.Equal(got, []string{"vault agents00 = Agents", namesFailed}) {
 				t.Fatalf("an unknown ID = %q", got)
 			}
 		})
@@ -204,11 +224,11 @@ func TestNamesLines(t *testing.T) {
 			})
 			ctx, cancel := context.WithTimeout(t.Context(), namesWait)
 			defer cancel()
-			if got := n.lines(ctx, "req1", known); !slices.Equal(got, []string{namesFailed}) {
+			if got := n.describe(ctx, "req1", known); !slices.Equal(got, []string{namesFailed}) {
 				t.Fatalf("lines = %q", got)
 			}
 			time.Sleep(10 * time.Second)
-			if got := n.lines(t.Context(), "req2", known); len(got) != 2 || *calls != 1 {
+			if got := n.describe(t.Context(), "req2", known); len(got) != 2 || *calls != 1 {
 				t.Fatalf("lines = %q after %d calls", got, *calls)
 			}
 		})
@@ -216,13 +236,13 @@ func TestNamesLines(t *testing.T) {
 
 	t.Run("commands without IDs look nothing up", func(t *testing.T) {
 		n, calls := countingNames(ok)
-		if got := n.lines(t.Context(), "req1", []string{"read", "op://Agents/GitHub Token/credential"}); got != nil || *calls != 0 {
+		if got := n.describe(t.Context(), "req1", []string{"read", "op://Agents/GitHub Token/credential"}); got != nil || *calls != 0 {
 			t.Fatalf("lines = %q after %d calls", got, *calls)
 		}
 	})
 
 	t.Run("nil names is a no-op", func(t *testing.T) {
-		if got := (*names)(nil).lines(t.Context(), "req1", known); got != nil {
+		if got := (*nameCache)(nil).describe(t.Context(), "req1", known); got != nil {
 			t.Fatalf("lines = %q", got)
 		}
 	})
@@ -253,7 +273,7 @@ func TestListNames(t *testing.T) {
 		if took := time.Since(start); took != time.Second {
 			t.Errorf("listing took %v; the two calls should run at once", took)
 		}
-		if line, _ := s.itemLine(itemRef{githubID, "Agents"}); line != "item github00 = GitHub Token" || s.vaults[otherID] != "Private" {
+		if line := s.itemLine(itemRef{githubID, "Agents"}); line != "item github00 = GitHub Token" || s.vaults[otherID] != "Private" {
 			t.Fatalf("snapshot = %+v", s)
 		}
 		slices.Sort(ran)

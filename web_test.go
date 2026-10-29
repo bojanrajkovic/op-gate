@@ -85,7 +85,7 @@ func TestApprovalPage(t *testing.T) {
 
 	t.Run("names the IDs in the command while pending", func(t *testing.T) {
 		w := newTestWeb(fakeKeys{})
-		w.approvals.names, _ = countingNames(func() (snapshot, error) { return testSnapshot, nil })
+		w.approvals.nameCache, _ = countingNames(func() (snapshot, error) { return testSnapshot, nil })
 		notified := make(chan struct{})
 		w.approvals.notify = func(context.Context, string) error { close(notified); return nil }
 		go w.approvals.ask(context.Background(), "req1", testClient, []string{"item", "get", githubID, "--vault", otherID})
@@ -104,7 +104,7 @@ func TestApprovalPage(t *testing.T) {
 	t.Run("a request decided while names load offers no buttons", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			w := newTestWeb(fakeKeys{})
-			w.approvals.names, _ = countingNames(func() (snapshot, error) {
+			w.approvals.nameCache, _ = countingNames(func() (snapshot, error) {
 				time.Sleep(2 * time.Second)
 				return testSnapshot, nil
 			})

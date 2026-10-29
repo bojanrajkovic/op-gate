@@ -108,26 +108,26 @@ type snapshot struct {
 	items  map[string]itemEntry
 }
 
-// vaultLine is vault id's line on the approval page, and whether s knows id.
-func (s snapshot) vaultLine(id string) (string, bool) {
+// vaultLine is vault id's line on the approval page.
+func (s snapshot) vaultLine(id string) string {
 	if name, ok := s.vaults[id]; ok {
-		return "vault " + id[:8] + " = " + name, true
+		return "vault " + id[:8] + " = " + name
 	}
-	return "vault " + id[:8] + " not found", false
+	return "vault " + id[:8] + " not found"
 }
 
-// itemLine is r's line on the approval page, and whether s knows r's ID. An
-// item counts as found only in the vault the command names, as op matches it.
-func (s snapshot) itemLine(r itemRef) (string, bool) {
+// itemLine is r's line on the approval page. An item counts as found only in
+// the vault the command names, as op matches it.
+func (s snapshot) itemLine(r itemRef) string {
 	head := "item " + r.id[:8]
 	it, ok := s.items[r.id]
 	switch {
 	case !ok:
-		return head + " not found", false
+		return head + " not found"
 	case r.vault != "" && r.vault != it.vault && !strings.EqualFold(r.vault, s.vaults[it.vault]):
-		return head + " not found in " + s.vaultLabel(r.vault), true
+		return head + " not found in " + s.vaultLabel(r.vault)
 	}
-	return head + " = " + it.title, true
+	return head + " = " + it.title
 }
 
 // vaultLabel names a vault given by ID or name, as briefly as the page can.
@@ -141,19 +141,47 @@ func (s snapshot) vaultLabel(v string) string {
 	return v
 }
 
-// missing reports whether r has an ID s doesn't know.
-func (s snapshot) missing(r refs) bool {
-	for _, id := range r.vaults {
+// missing reports whether rs has an ID s doesn't know.
+func (s snapshot) missing(rs refs) bool {
+	for _, id := range rs.vaults {
 		if _, ok := s.vaults[id]; !ok {
 			return true
 		}
 	}
-	for _, it := range r.items {
+	for _, it := range rs.items {
 		if _, ok := s.items[it.id]; !ok {
 			return true
 		}
 	}
 	return false
+}
+
+// describeRefs returns the approval page's lines for rs, and how many of rs's
+// IDs s doesn't know. After a failed lookup, an unknown ID may just be newer
+// than s, so its line gives way to one namesFailed line.
+func describeRefs(s snapshot, rs refs, lookupFailed bool) (lines []string, unknown int) {
+	for _, id := range rs.vaults {
+		if _, ok := s.vaults[id]; !ok {
+			unknown++
+			if lookupFailed {
+				continue
+			}
+		}
+		lines = append(lines, s.vaultLine(id))
+	}
+	for _, it := range rs.items {
+		if _, ok := s.items[it.id]; !ok {
+			unknown++
+			if lookupFailed {
+				continue
+			}
+		}
+		lines = append(lines, s.itemLine(it))
+	}
+	if lookupFailed && unknown > 0 {
+		lines = append(lines, namesFailed)
+	}
+	return lines, unknown
 }
 
 // needsRefresh decides whether to fetch a new snapshot, given the time since
@@ -169,8 +197,9 @@ func needsRefresh(age time.Duration, failed, missing bool) bool {
 	}
 }
 
-// names caches the snapshot. A nil *names looks nothing up.
-type names struct {
+// nameCache holds the last good snapshot and refreshes it as needsRefresh
+// says. A nil *nameCache describes nothing.
+type nameCache struct {
 	list func(context.Context) (snapshot, error)
 
 	mu    sync.Mutex
@@ -180,41 +209,21 @@ type names struct {
 	group singleflight.Group
 }
 
-// lines describes each vault and item ID in args for request id's page. When
-// the lookup failed, it describes what the last good snapshot knows, and adds
-// namesFailed in place of the rest.
-func (n *names) lines(ctx context.Context, id string, args []string) []string {
+// describe returns the approval page's lines for the vault and item IDs in
+// args, which belong to request requestID.
+func (c *nameCache) describe(ctx context.Context, requestID string, args []string) []string {
 	rs := findRefs(args)
-	if n == nil || rs.count() == 0 {
+	if c == nil || rs.count() == 0 {
 		return nil
 	}
 	ctx, span := tracer.Start(ctx, "op_gate.names")
 	defer span.End()
 
-	s, refreshed, err := n.get(ctx, id, rs)
-	var out []string
-	unknown := 0
-	add := func(line string, known bool) {
-		if !known {
-			unknown++
-			if err != nil {
-				return
-			}
-		}
-		out = append(out, line)
-	}
-	for _, v := range rs.vaults {
-		add(s.vaultLine(v))
-	}
-	for _, it := range rs.items {
-		add(s.itemLine(it))
-	}
-	if err != nil && unknown > 0 {
-		out = append(out, namesFailed)
-	}
+	s, refreshed, err := c.snapshotFor(ctx, requestID, rs)
+	lines, unknown := describeRefs(s, rs, err != nil)
 
 	span.SetAttributes(
-		attribute.String("op_gate.request_id", id),
+		attribute.String("op_gate.request_id", requestID),
 		attribute.Int("op_gate.names.refs", rs.count()),
 		attribute.Int("op_gate.names.unknown", unknown),
 		attribute.Bool("op_gate.names.refreshed", refreshed),
@@ -222,33 +231,33 @@ func (n *names) lines(ctx context.Context, id string, args []string) []string {
 	if err != nil {
 		span.SetStatus(codes.Error, "name lookup failed")
 	}
-	return out
+	return lines
 }
 
-// get returns the snapshot to describe rs with, whether this call waited on a
-// refresh, and the last attempt's error. Concurrent callers share one refresh,
-// which outlives a caller that gives up. A failed refresh keeps the last good
-// snapshot.
-func (n *names) get(ctx context.Context, id string, rs refs) (snapshot, bool, error) {
-	n.mu.Lock()
-	s, err, at := n.snap, n.err, n.at
-	n.mu.Unlock()
+// snapshotFor returns the snapshot to describe rs with, whether this call
+// waited on a refresh, and the last attempt's error, which can be newer than
+// the snapshot: a failed refresh keeps the last good one. Concurrent callers
+// share one refresh, which outlives a caller that gives up.
+func (c *nameCache) snapshotFor(ctx context.Context, requestID string, rs refs) (snapshot, bool, error) {
+	c.mu.Lock()
+	s, err, at := c.snap, c.err, c.at
+	c.mu.Unlock()
 	if !needsRefresh(time.Since(at), err != nil, s.missing(rs)) {
 		return s, false, err
 	}
 
-	ch := n.group.DoChan("", func() (any, error) {
-		fresh, err := n.list(context.WithoutCancel(ctx))
+	ch := c.group.DoChan("", func() (any, error) {
+		fresh, err := c.list(context.WithoutCancel(ctx))
 		if err != nil {
-			slog.WarnContext(ctx, "looking up names", "request_id", id, "err", err)
+			slog.WarnContext(ctx, "looking up names", "request_id", requestID, "err", err)
 		}
-		n.mu.Lock()
-		defer n.mu.Unlock()
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		if err == nil {
-			n.snap = fresh
+			c.snap = fresh
 		}
-		n.err, n.at = err, time.Now()
-		return n.snap, err
+		c.err, c.at = err, time.Now()
+		return c.snap, err
 	})
 	select {
 	case r := <-ch:
