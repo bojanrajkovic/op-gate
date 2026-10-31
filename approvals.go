@@ -51,20 +51,25 @@ type verdict int
 const (
 	verdictDenied verdict = iota
 	verdictApproved
+	verdictApprovedAndCached
 	verdictCacheHit // a cached approval allowed it; nobody was asked
 )
 
 // String is the request's outcome in logs and spans.
 func (v verdict) String() string {
-	return [...]string{"denied", "approved", "cache_hit"}[v]
+	return [...]string{"denied", "approved", "approved_and_cached", "cache_hit"}[v]
 }
 
 // verdictOf maps a request's final state to ask's answer.
 func verdictOf(st state) verdict {
-	if st == approved || st == approvedAndCached {
+	switch st {
+	case approved:
 		return verdictApproved
+	case approvedAndCached:
+		return verdictApprovedAndCached
+	default:
+		return verdictDenied
 	}
-	return verdictDenied
 }
 
 // A cached approval lapses once it goes cacheIdle without use, and never
