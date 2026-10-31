@@ -7,9 +7,12 @@ require (
 	github.com/chromedp/chromedp v0.21.0
 	github.com/descope/virtualwebauthn v1.0.5
 	github.com/go-webauthn/webauthn v0.18.2
+	go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0
 	go.opentelemetry.io/otel v1.47.0
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
+	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/sync v0.24.0
 )
