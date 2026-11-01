@@ -55,7 +55,7 @@ func pendingRequest(t *testing.T, w *web, id string) <-chan bool {
 	w.approvals.notify = func(context.Context, string) error { close(notified); return nil }
 	go func() {
 		v, _ := w.approvals.ask(context.Background(), id, testClient, []string{"read", "op://Agent/GitHub Token/credential"})
-		got <- v == verdictApproved
+		got <- v != verdictDenied
 	}()
 	<-notified
 	return got

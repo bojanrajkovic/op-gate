@@ -127,6 +127,14 @@ func TestHandle(t *testing.T) {
 		}
 	})
 
+	t.Run("approved and cached runs op", func(t *testing.T) {
+		s, ran := fakeServer(func(context.Context) (verdict, error) { return verdictApprovedAndCached, nil }, result{Stdout: "secret"})
+		res, outcome := s.handle(context.Background(), "req1", testClient, okArgs)
+		if !*ran || outcome != "approved_and_cached" || res.Stdout != "secret" {
+			t.Fatalf("got %+v %q ran=%v", res, outcome, *ran)
+		}
+	})
+
 	t.Run("cache hit runs op", func(t *testing.T) {
 		s, ran := fakeServer(func(context.Context) (verdict, error) { return verdictCacheHit, nil }, result{Stdout: "secret"})
 		res, outcome := s.handle(context.Background(), "req1", testClient, okArgs)

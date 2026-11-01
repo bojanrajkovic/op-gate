@@ -123,7 +123,7 @@ func TestAsk(t *testing.T) {
 			a.decide("req1", approvedAndCached)
 			cancel()
 		}()
-		if v, _ := a.ask(ctx, "req1", testClient, args); v != verdictApproved {
+		if v, _ := a.ask(ctx, "req1", testClient, args); v != verdictApprovedAndCached {
 			t.Fatal("approval lost to a simultaneous cancel")
 		}
 	})
@@ -154,7 +154,7 @@ func approveVia(t *testing.T, a *approvals, links chan string, id string, args [
 		<-links
 		a.decide(id, to)
 	}()
-	if v, err := a.ask(context.Background(), id, testClient, args); v != verdictApproved || err != nil {
+	if v, err := a.ask(context.Background(), id, testClient, args); v != verdictOf(to) || err != nil {
 		t.Fatalf("ask = %v, %v", v, err)
 	}
 }
