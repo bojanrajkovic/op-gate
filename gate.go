@@ -114,6 +114,8 @@ type result struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
 	ExitCode int    `json:"exit_code"`
+
+	opFailed bool // op ran and exited non-zero; a request refused before op ran also has a non-zero ExitCode
 }
 
 func fail(format string, a ...any) result {
@@ -127,6 +129,7 @@ type server struct {
 	run             func(ctx context.Context, args []string) result
 	approvalTimeout time.Duration
 	opTimeout       time.Duration
+	metrics         *requestMetrics
 }
 
 // handle returns the result to send back and a one-word outcome for the
@@ -158,6 +161,7 @@ func (s *server) handle(ctx context.Context, id string, c client, args []string)
 		res.ExitCode = 1
 		res.Stderr = "op-gate: op exited 127\n" + res.Stderr
 	}
+	res.opFailed = res.ExitCode != 0
 	return res, v.String()
 }
 
@@ -174,15 +178,17 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request) {
 
 	logAttrs := []any{"request_id", id, "subcommand", subcommand(req.Args)}
 	var res result
-	var outcome string
+	var outcome, clientID string
 	c, err := parseClient(r.Header.Get("Authorization"))
 	if err != nil {
 		res, outcome = fail("%v", err), "no_client"
 	} else {
 		res, outcome = s.handle(ctx, id, c, req.Args)
-		span.SetAttributes(attribute.String("op_gate.client_id", c.short()), attribute.String("op_gate.client_name", c.name))
-		logAttrs = append(logAttrs, "client_id", c.short(), "client_name", c.name)
+		clientID = c.short()
+		span.SetAttributes(attribute.String("op_gate.client_id", clientID), attribute.String("op_gate.client_name", c.name))
+		logAttrs = append(logAttrs, "client_id", clientID, "client_name", c.name)
 	}
+	elapsed := time.Since(start)
 
 	span.SetAttributes(
 		attribute.String("op_gate.request_id", id),
@@ -190,8 +196,12 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request) {
 		attribute.String("op_gate.outcome", outcome),
 		attribute.Int("op_gate.exit_code", res.ExitCode),
 	)
+
+	s.metrics.record(ctx, outcome, subcommand(req.Args), res.opFailed, clientID, elapsed)
+
 	slog.InfoContext(ctx, "request", append(logAttrs, "outcome", outcome,
-		"exit_code", res.ExitCode, "duration", time.Since(start).Round(time.Millisecond).String())...)
+		"exit_code", res.ExitCode, "duration", elapsed.Round(time.Millisecond).String())...)
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(res); err != nil {
 		slog.WarnContext(ctx, "writing response", "request_id", id, "err", err)

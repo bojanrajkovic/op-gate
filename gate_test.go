@@ -122,7 +122,7 @@ func TestHandle(t *testing.T) {
 	t.Run("approved runs op and passes output through", func(t *testing.T) {
 		s, ran := fakeServer(approve, result{Stdout: "secret", Stderr: "warn", ExitCode: 3})
 		res, outcome := s.handle(context.Background(), "req1", testClient, okArgs)
-		if !*ran || outcome != "approved" || res != (result{Stdout: "secret", Stderr: "warn", ExitCode: 3}) {
+		if !*ran || outcome != "approved" || res != (result{Stdout: "secret", Stderr: "warn", ExitCode: 3, opFailed: true}) {
 			t.Fatalf("got %+v %q ran=%v", res, outcome, *ran)
 		}
 	})

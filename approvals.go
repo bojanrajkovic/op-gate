@@ -84,6 +84,11 @@ type cachedApproval struct {
 	approvedAt, lastUsed time.Time
 }
 
+// fresh reports whether the approval still allows a command at now.
+func (e cachedApproval) fresh(now time.Time) bool {
+	return now.Sub(e.lastUsed) < cacheIdle && now.Sub(e.approvedAt) < cacheMax
+}
+
 // cacheKey joins the client's ID and args with NUL, which neither a hex ID
 // nor an argument can contain, so two different requests never share a key.
 func cacheKey(c client, args []string) string {
@@ -198,7 +203,7 @@ func (a *approvals) cached(c client, args []string) (by string, ok bool) {
 		return "", false
 	}
 	now := time.Now()
-	if now.Sub(e.lastUsed) >= cacheIdle || now.Sub(e.approvedAt) >= cacheMax {
+	if !e.fresh(now) {
 		delete(a.cache, key)
 		return "", false
 	}

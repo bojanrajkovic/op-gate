@@ -79,7 +79,7 @@ func setupTelemetry(ctx context.Context) (func(context.Context) error, error) {
 		return nil, err
 	}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(traceExp), sdktrace.WithResource(res))
-	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)), sdkmetric.WithResource(res))
+	mp := newMeterProvider(sdkmetric.NewPeriodicReader(metricExp), res)
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { slog.Warn("otel", "err", err) }))
@@ -87,6 +87,16 @@ func setupTelemetry(ctx context.Context) (func(context.Context) error, error) {
 		return nil, fmt.Errorf("runtime metrics: %w", err)
 	}
 	return func(ctx context.Context) error { return errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx)) }, nil
+}
+
+// newMeterProvider stores request durations as an exponential histogram, which
+// covers quick cache hits and long approval waits without chosen buckets.
+func newMeterProvider(reader sdkmetric.Reader, res *resource.Resource) *sdkmetric.MeterProvider {
+	duration := sdkmetric.NewView(
+		sdkmetric.Instrument{Name: "op_gate.request.duration"},
+		sdkmetric.Stream{Aggregation: sdkmetric.AggregationBase2ExponentialHistogram{MaxSize: 160, MaxScale: 20}},
+	)
+	return sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader), sdkmetric.WithResource(res), sdkmetric.WithView(duration))
 }
 
 func main() {
@@ -134,7 +144,14 @@ func run() error {
 
 	a := newApprovals(approvalURL, push.notify)
 	a.nameCache = &nameCache{list: func(ctx context.Context) (snapshot, error) { return listNames(ctx, runOp) }}
-	s := &server{ask: a.ask, run: runOp, approvalTimeout: approvalTimeout, opTimeout: opTimeout}
+	if err := a.observe(otel.GetMeterProvider()); err != nil {
+		return fmt.Errorf("approval metrics: %w", err)
+	}
+	metrics, err := newRequestMetrics(otel.GetMeterProvider())
+	if err != nil {
+		return fmt.Errorf("request metrics: %w", err)
+	}
+	s := &server{ask: a.ask, run: runOp, approvalTimeout: approvalTimeout, opTimeout: opTimeout, metrics: metrics}
 
 	// Two listeners, one job each: op-forward's protocol, and the approval
 	// pages, which must be served over HTTPS by a TLS-terminating proxy.
