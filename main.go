@@ -18,8 +18,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.28.0"
@@ -56,24 +59,34 @@ func readSecret(ctx context.Context, ref string) (string, error) {
 	return strings.TrimSpace(res.Stdout), nil
 }
 
-// setupTracing exports spans over OTLP/HTTP when OTEL_EXPORTER_OTLP_ENDPOINT
-// is set, and leaves OpenTelemetry's no-op provider in place otherwise.
-func setupTracing(ctx context.Context) (func(context.Context) error, error) {
+// setupTelemetry exports spans and Go runtime metrics over OTLP/HTTP when
+// OTEL_EXPORTER_OTLP_ENDPOINT is set, and leaves OpenTelemetry's no-op providers
+// in place otherwise. The func it returns shuts down both providers.
+func setupTelemetry(ctx context.Context) (func(context.Context) error, error) {
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
 		return func(context.Context) error { return nil }, nil
 	}
-	exp, err := otlptracehttp.New(ctx)
+	traceExp, err := otlptracehttp.New(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("trace exporter: %w", err)
+	}
+	metricExp, err := otlpmetrichttp.New(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("metric exporter: %w", err)
 	}
 	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(semconv.ServiceName("op-gate")))
 	if err != nil {
 		return nil, err
 	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res))
+	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(traceExp), sdktrace.WithResource(res))
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)), sdkmetric.WithResource(res))
 	otel.SetTracerProvider(tp)
+	otel.SetMeterProvider(mp)
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { slog.Warn("otel", "err", err) }))
-	return tp.Shutdown, nil
+	if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
+		return nil, fmt.Errorf("runtime metrics: %w", err)
+	}
+	return func(ctx context.Context) error { return errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx)) }, nil
 }
 
 func main() {
@@ -94,7 +107,7 @@ func run() error {
 	webAddr := envOr("APPROVAL_LISTEN_ADDR", ":8080")
 
 	ctx := context.Background()
-	shutdown, err := setupTracing(ctx)
+	shutdown, err := setupTelemetry(ctx)
 	if err != nil {
 		return err
 	}

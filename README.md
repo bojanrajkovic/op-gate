@@ -173,7 +173,7 @@ If the client disconnects, the request expires, and its page says so.
 | `PUSHOVER_USER_REF` | yes | `op://` reference to the approver's Pushover user key |
 | `LISTEN_ADDR` | no | op-forward listener. Defaults to `:18340`. |
 | `APPROVAL_LISTEN_ADDR` | no | Approval page listener. Defaults to `:8080`. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | Enables trace export over OTLP/HTTP, along with the other standard `OTEL_*` variables. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | Enables trace and metric export over OTLP/HTTP, along with the other standard `OTEL_*` variables. |
 
 ### Client tokens
 
@@ -207,6 +207,7 @@ Everything that shares a token directory is one client, so every agent on a mach
 - **Run one replica.** Pending requests live in memory, so a second instance would hold requests the first doesn't know about. A restart fails any request that's waiting.
 - **Logs** are JSON on stdout: one line per request with its ID, client (`client_id`, the short ID, and `client_name`), subcommand, outcome, exit code, and duration. A request without a valid token has outcome `no_client` and no client fields. A request answered from a cached approval has outcome `cache_hit`, and a `cached approval used` line before it names the request that created the approval in `approved_by`. A failed name lookup logs `looking up names` once, with op's error. They never include arguments, output, or looked-up names, since those carry item names. Every line has `"service":"op-gate"`, and lines logged inside a span carry its `trace_id` and `span_id`, so a log pipeline can link them to traces.
 - **Traces:** spans for each request, the Pushover call, the passkey check, each name lookup, and each `op` run, with the request ID, client, and outcome as attributes. A cache hit's request span also carries `op_gate.approved_by`. A name lookup's span (`op_gate.names`) records how many IDs it looked up, how many it didn't find, and whether it refreshed the cache, without naming anything.
+- **Metrics:** Go runtime metrics every 60 seconds, such as `go.memory.used` and `go.goroutine.count`, sent to the same OTLP endpoint as traces. There are no request or approval metrics yet.
 - **`op` upgrades:** the base image is pinned by digest. Renovate opens upgrade PRs, which aren't automerged, because a renamed subcommand would change what the allowlist allows.
 
 ## Security model
