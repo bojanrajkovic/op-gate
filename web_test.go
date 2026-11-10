@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,9 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // fakeKeys stands in for the WebAuthn ceremony: a request body of "good"
@@ -237,5 +242,54 @@ func TestRegistration(t *testing.T) {
 
 	if rec := do(t, h, "POST", "/register/verify?token="+opts.Token, "good"); rec.Code != http.StatusConflict {
 		t.Fatalf("reused registration token: %d", rec.Code)
+	}
+}
+
+func TestWebRequestsAreTraced(t *testing.T) {
+	var logs bytes.Buffer
+	oldLog, oldTP := slog.Default(), otel.GetTracerProvider()
+	spans := tracetest.NewSpanRecorder()
+	slog.SetDefault(newLogger(&logs))
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)))
+	t.Cleanup(func() {
+		slog.SetDefault(oldLog)
+		otel.SetTracerProvider(oldTP)
+	})
+
+	h := newTestWeb(fakeKeys{}).handler()
+	var opts struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(do(t, h, "POST", "/register/options", "").Body.Bytes(), &opts); err != nil || opts.Token == "" {
+		t.Fatalf("options: %v", err)
+	}
+	if rec := do(t, h, "POST", "/register/verify?token="+opts.Token, "forged"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("forged verify: %d", rec.Code)
+	}
+
+	ended := spans.Ended()
+	if len(ended) != 2 {
+		t.Fatalf("got %d spans, want one per request", len(ended))
+	}
+	verify := ended[1]
+	if verify.Name() != "POST /register/verify" {
+		t.Errorf("span name = %q", verify.Name())
+	}
+	// The registration token is in the query string, which must stay out of spans.
+	for _, s := range ended {
+		for _, a := range s.Attributes() {
+			if strings.Contains(a.Value.Emit(), opts.Token) {
+				t.Errorf("span %q attribute %s holds the registration token", s.Name(), a.Key)
+			}
+		}
+	}
+
+	var line map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &line); err != nil {
+		t.Fatalf("log %q: %v", logs.String(), err)
+	}
+	sc := verify.SpanContext()
+	if line["msg"] != "passkey registration failed" || line["trace_id"] != sc.TraceID().String() || line["span_id"] != sc.SpanID().String() {
+		t.Errorf("log line = %v, want trace_id %s and span_id %s", line, sc.TraceID(), sc.SpanID())
 	}
 }
