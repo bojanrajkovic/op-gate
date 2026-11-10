@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric/noop"
 )
 
 // web serves the approval and registration pages. WebAuthn needs HTTPS, so
@@ -41,9 +40,7 @@ func (w *web) handler() http.Handler {
 	mux.HandleFunc("POST /register/options", w.registerOptions)
 	mux.HandleFunc("POST /register/verify", w.registerVerify)
 	// A server span per request gives every handler's log lines trace IDs.
-	// otelhttp's metrics are off: they're labelled with the Host header, which
-	// the caller chooses.
-	return otelhttp.NewHandler(mux, "web", otelhttp.WithMeterProvider(noop.NewMeterProvider()))
+	return otelhttp.NewHandler(mux, "web")
 }
 
 func writeJSON(rw http.ResponseWriter, code int, v any) {
