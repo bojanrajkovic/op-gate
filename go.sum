@@ -8,6 +8,8 @@ github.com/chromedp/chromedp v0.21.0 h1:nVHgS2LHyhZJ1l3BWRbG2eFIFYiJMnvkJbELbd8W
 github.com/chromedp/chromedp v0.21.0/go.mod h1:6z1Y5FdKUxRzxx2qcC5h1xjaBJrSWrZp1mjgITfNZig=
 github.com/descope/virtualwebauthn v1.0.5 h1:fMXji5UMepJC51Ge6d4v5IAjiJQRKmXE9hlo/B9SczQ=
 github.com/descope/virtualwebauthn v1.0.5/go.mod h1:lLCfN+DpCM3iisM4bCILZlFEWkC1Zo7ZgsxC45CUapI=
+github.com/felixge/httpsnoop v1.1.0 h1:3YtUj32ZZkqZtt3sZZsClsymw/QDuVfpNhoA31zeORc=
+github.com/felixge/httpsnoop v1.1.0/go.mod h1:Zqxgdd+1Rkcz8euOqdr7lqgCRJztwr5hp9vDSi5UZCE=
 github.com/fxamacker/cbor/v2 v2.9.4 h1:xwjVlxEMR3S605oUlgBjKLTTeGFciYPGYCtF/35LKGo=
 github.com/fxamacker/cbor/v2 v2.9.4/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/go-json-experiment/json v0.0.0-20260213210345-44df1a37e875 h1:XGPtjxqp0FS8jj1Z7QGcSOSgyq1fUPjNyJXvi3KfI4A=
@@ -47,6 +49,8 @@ github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
 github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0 h1:LxwW/9ctSCv+QkE/cLR7M91ZIkXNMqJtEMi1vCw9U8s=
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0/go.mod h1:tOsftB4SslBwwErVEPaenU2RpThXWPIU8DoJHEC4dyw=
 go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0 h1:rv8t3kKjyC2/9D99L1MZt4tJSZO4aYUmHus7L//iKKg=
 go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0/go.mod h1:ZzG+JmzLLvKzx6tMeLrw2l7F8ik2GeRZJALoPBqnM0c=
 go.opentelemetry.io/otel v1.47.0 h1:j7ALJ/zgkS7Z6aeJW09p8VC9804bC+PpeTfCD4XPnOM=

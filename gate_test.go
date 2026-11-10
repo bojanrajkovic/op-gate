@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -189,6 +191,11 @@ func TestHandle(t *testing.T) {
 }
 
 func TestExecuteEndpoint(t *testing.T) {
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(newLogger(&logs))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
 	s, _ := fakeServer(func(context.Context) (verdict, error) { return verdictApproved, nil }, result{Stdout: "ok"})
 	req := httptest.NewRequest(http.MethodPost, "/op/execute", strings.NewReader(`{"args":["whoami"],"timeout_ms":300000}`))
 	req.Header.Set("Authorization", "Bearer junction:"+strings.Repeat("s", 32))
@@ -200,6 +207,17 @@ func TestExecuteEndpoint(t *testing.T) {
 	var res result
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res.Stdout != "ok" {
 		t.Fatalf("body %q: %v", rec.Body.String(), err)
+	}
+
+	var line map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &line); err != nil {
+		t.Fatalf("log %q: %v", logs.String(), err)
+	}
+	if _, ok := line["duration_ms"].(float64); !ok || line["msg"] != "request" || line["client_name"] != "junction" {
+		t.Errorf("request line = %v, want a numeric duration_ms", line)
+	}
+	if _, ok := line["duration"]; ok {
+		t.Errorf("request line still has duration: %v", line)
 	}
 }
 

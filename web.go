@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 )
@@ -38,7 +39,8 @@ func (w *web) handler() http.Handler {
 	mux.HandleFunc("GET /register", w.registerPage)
 	mux.HandleFunc("POST /register/options", w.registerOptions)
 	mux.HandleFunc("POST /register/verify", w.registerVerify)
-	return mux
+	// A server span per request gives every handler's log lines trace IDs.
+	return otelhttp.NewHandler(mux, "web")
 }
 
 func writeJSON(rw http.ResponseWriter, code int, v any) {
@@ -81,7 +83,7 @@ func (w *web) approveOptions(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error("starting passkey login", "request_id", id, "err", err)
+		slog.ErrorContext(r.Context(), "starting passkey login", "request_id", id, "err", err)
 		writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": "couldn't start the passkey check"})
 		return
 	}
@@ -139,10 +141,10 @@ func (w *web) registerPage(rw http.ResponseWriter, _ *http.Request) {
 // registerOptions is open to anyone who can reach the page. That's safe:
 // a registration only produces a line of text, which does nothing until the
 // operator adds it to the passkeys directory.
-func (w *web) registerOptions(rw http.ResponseWriter, _ *http.Request) {
+func (w *web) registerOptions(rw http.ResponseWriter, r *http.Request) {
 	creation, session, err := w.keys.beginRegistration()
 	if err != nil {
-		slog.Error("starting passkey registration", "err", err)
+		slog.ErrorContext(r.Context(), "starting passkey registration", "err", err)
 		writeJSON(rw, http.StatusInternalServerError, map[string]string{"error": "couldn't start registration"})
 		return
 	}
@@ -170,7 +172,7 @@ func (w *web) registerVerify(rw http.ResponseWriter, r *http.Request) {
 	}
 	cred, err := w.keys.finishRegistration(*session, r)
 	if err != nil {
-		slog.Warn("passkey registration failed", "err", err)
+		slog.WarnContext(r.Context(), "passkey registration failed", "err", err)
 		writeJSON(rw, http.StatusBadRequest, map[string]string{"error": "Registration failed."})
 		return
 	}
