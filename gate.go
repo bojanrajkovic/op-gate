@@ -200,7 +200,7 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request) {
 	s.metrics.record(ctx, outcome, subcommand(req.Args), res.opFailed, clientID, elapsed)
 
 	slog.InfoContext(ctx, "request", append(logAttrs, "outcome", outcome,
-		"exit_code", res.ExitCode, "duration", elapsed.Round(time.Millisecond).String())...)
+		"exit_code", res.ExitCode, "duration_ms", elapsed.Milliseconds())...)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(res); err != nil {
