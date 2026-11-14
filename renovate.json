@@ -11,6 +11,11 @@
       "description": "op upgrades can rename subcommands the allowlist depends on; review them by hand",
       "matchDepNames": ["docker.io/1password/op", "1password/op"],
       "automerge": false
+    },
+    {
+      "description": "Move go.mod, mise.toml and the build image to a new Go version in one PR",
+      "matchDepNames": ["go", "docker.io/library/golang"],
+      "groupName": "Go"
     }
   ]
 }
