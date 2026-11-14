@@ -5,7 +5,6 @@
     ":semanticCommits",
     "helpers:pinGitHubActionDigests"
   ],
-  "minimumReleaseAge": "3 days",
   "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
     {
