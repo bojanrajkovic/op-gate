@@ -3,7 +3,7 @@ module github.com/bojanrajkovic/op-gate
 go 1.27.2
 
 require (
-	github.com/chromedp/cdproto v0.160.8
+	github.com/chromedp/cdproto v0.160.9
 	github.com/chromedp/chromedp v0.24.0
 	github.com/descope/virtualwebauthn v1.0.5
 	github.com/go-webauthn/webauthn v0.18.2
